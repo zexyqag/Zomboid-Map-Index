@@ -2,8 +2,9 @@
 # Works through the open issues of the repository REPO (owner/name) that the checks labelled ready. An item to add
 # or update is read from WORKSHOP_DIR (a Steam library's steamapps/workshop folder) when its copy there is as new as
 # the Workshop's, or else downloaded with SteamCMD into CACHE_DIR, and its index entry written to ITEMS_DIR/<id>.json;
-# the entry of an item that is gone is removed. Prints per issue "<number>\t<add|update|remove>\t<id>\t<title>\t<result>",
-# "-" for what it doesn't know, the result being "done" or why not, and what it does on stderr.
+# the entry of an item that is gone is removed. With DROP_DOWNLOADS=1 the downloads are deleted once read. Prints
+# per issue "<number>\t<add|update|remove>\t<id>\t<title>\t<result>", "-" for what it doesn't know, the result
+# being "done" or why not, and what it does on stderr.
 set -euo pipefail
 here="$(dirname "$0")"
 # shellcheck source=ci/lib.sh
@@ -22,6 +23,11 @@ local_copy() {
   if [[ "${updated}" =~ ^[0-9]+$ ]] && [ "${updated}" -ge "$2" ]; then
     printf '%s\n' "${workshop}/content/${WORKSHOP_APP}/$1"
   fi
+}
+
+drop_downloads() {
+  # All of SteamCMD's workshop folder goes, its record of the items it has with it, so it downloads them anew.
+  [ "${DROP_DOWNLOADS:-0}" != 1 ] || rm -rf "${cache:?}/steamapps/workshop"
 }
 
 download() {
@@ -78,11 +84,14 @@ while IFS=$'\t' read -r number id kind title; do
   fi
   updated="$(jq -r '.time_updated' <<< "${details}")"
   folder="$(local_copy "${id}" "${updated}")"
+  downloaded=false
   if [ -n "${folder}" ]; then
     echo "Reading ${name} (${id}) from the Steam library" >&2
   else
     echo "Downloading ${name} (${id})" >&2
+    downloaded=true
     if ! folder="$(download "${id}")"; then
+      drop_downloads
       printf '%s\t%s\t%s\t%s\tSteamCMD could not download it\n' "${number}" "${kind}" "${id}" "${name}"
       continue
     fi
@@ -94,6 +103,7 @@ while IFS=$'\t' read -r number id kind title; do
     rm -f "${items}/${id}.json.new"
     printf '%s\t%s\t%s\t%s\tits files could not be read\n' "${number}" "${kind}" "${id}" "${name}"
   fi
+  [ "${downloaded}" = false ] || drop_downloads
 done < <(jq -r -s 'add | .[] | select(.pull_request | not) | [.number, ((.title | capture("\\((?<id>[0-9]+)\\)$").id) // "-"),
   ([.labels[].name] | if index("gone") then "gone" elif index("update") then "update" elif index("add") then "add" else "-" end), .title] | @tsv' \
   "${issues}")

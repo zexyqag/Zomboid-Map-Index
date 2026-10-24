@@ -336,6 +336,7 @@ test_work() {
 #!/bin/bash
 printf '%s\n' "$*" >> "${WORK}/steamcmd-calls"
 id="${@: -2:1}"
+echo "${id}:$(ls "$2/steamapps/workshop/content/108600" 2> /dev/null | paste -sd ,)" >> "${WORK}/steamcmd-found"
 if [ "${id}" = 321 ]; then echo "ERROR! Timeout downloading item 321"; exit 0; fi
 if [ "${id}" = 322 ]; then mkdir -p "$2/steamapps/workshop/content/108600/322/mods"; echo "ERROR! Download item 322 failed (Failure)."; exit 0; fi
 mkdir -p "$2/steamapps/workshop/content/108600"
@@ -379,6 +380,16 @@ EOF
   expect_eq "$(sed -E 's/.* ([0-9]+) \+quit$/\1/' "${WORK}/steamcmd-calls" | paste -sd ' ')" "123 789 321 321 321 322 322 322 654"
   expect_eq "$(head -n 1 "${WORK}/steamcmd-calls")" "+force_install_dir ${dir}/cache +login anonymous +workshop_download_item 108600 123 +quit"
   grep -q '^Reading Local Map (456) from the Steam library$' "${WORK}/work-err" || fail "no word of the library copy: $(cat "${WORK}/work-err")"
+  [ -d "${dir}/cache/steamapps/workshop/content/108600/123" ] || fail "the download isn't kept"
+  # Dropping downloads: each is gone once read, failed ones too, and the items are indexed as before.
+  rm -f "${WORK}/steamcmd-calls" "${WORK}/steamcmd-found" "${WORK}/github-calls" "${dir}/items/123.json"
+  out="$(REPO=owner/index ITEMS_DIR="${dir}/items" CACHE_DIR="${dir}/cache" WORKSHOP_DIR="${dir}/library" STEAMCMDDIR="${dir}/steamcmd" \
+    DROP_DOWNLOADS=1 bash "${worker}" 2> "${WORK}/work-err")" || fail "the worker failed dropping downloads: $(cat "${WORK}/work-err")"
+  expect_eq "$(jq -c . "${dir}/items/123.json")" "${ITEM_JSON}"
+  [ -e "${dir}/cache/steamapps/workshop" ] && fail "a download is left: $(find "${dir}/cache" -mindepth 3 -maxdepth 5)"
+  # After the first, which finds what the run before kept, each download starts from nothing, after one that failed
+  # too; the tries of one download keep what came before.
+  expect_eq "$(paste -sd ' ' "${WORK}/steamcmd-found")" "123:123,322,654,789 789: 321: 321: 321: 322: 322:322 322:322 654:"
   expect_eq "$(sed -E 's/.*&page=//' "${WORK}/github-calls" | paste -sd ' ')" "1 2"
   expect_eq "$(head -n 1 "${WORK}/github-calls")" "https://api.github.com/repos/owner/index/issues?state=open&labels=ready&per_page=100&page=1"
 }
@@ -403,18 +414,24 @@ test_worker_run() {
   cat > "${WORK}/bin/docker" <<'EOF'
 #!/bin/bash
 printf '%s\n' "$*" >> "${WORK}/docker-calls"
-[ "$1" = run ] || exit 0
+[ "$1" = run ] && [ -z "${FAKE_NO_PLAN:-}" ] || exit 0
 printf '{"id": "123"}\n' > "${FAKE_CLONE}/items/123.json"
 rm -f "${FAKE_CLONE}/items/999.json"
 printf '%s\n' "1	add	123	Town Pack	done" "4	remove	999	Removed	done" "2	update	456	Local Map	done" "7	add	321	Broken	SteamCMD could not download it"
 EOF
   chmod +x "${WORK}/bin/docker"
   local out
+  bash "${clone}/worker/run.sh" --keep 2> "${WORK}/run-err" && fail "run.sh took an unknown option"
+  expect_eq "$(cat "${WORK}/run-err")" "usage: run.sh [--drop-downloads]"
+  [ -e "${WORK}/docker-calls" ] && fail "run.sh ran docker with an unknown option"
   out="$(FAKE_CLONE="${clone}" WORKSHOP_DIR=/mnt/c/Steam/steamapps/workshop bash "${clone}/worker/run.sh")" || fail "run.sh failed"
   expect_eq "${out}" "$(printf '%s\n' "#1 Town Pack: add" "#4 Removed: remove" "#2 Local Map: unchanged" "#7 Broken: SteamCMD could not download it")"
   expect_eq "$(git -C "${remote}" log --format='%s|%b' main | grep -v '^$' | head -n 2 | paste -sd ' ')" "data: remove Removed (999)|Closes #4 data: add Town Pack (123)|Closes #1"
   expect_eq "$(git -C "${remote}" ls-tree --name-only main items/ | paste -sd ' ')" "items/123.json items/456.json"
-  expect_eq "$(sed -n 2p "${WORK}/docker-calls")" "run --rm --volume zomboid-map-index-cache:/cache --volume ${clone}/items:/items --env REPO=${remote%.git} --volume /mnt/c/Steam/steamapps/workshop:/workshop:ro zomboid-map-index-worker"
+  expect_eq "$(sed -n 2p "${WORK}/docker-calls")" "run --rm --volume zomboid-map-index-cache:/cache --volume ${clone}/items:/items --env REPO=${remote%.git} --env DROP_DOWNLOADS=0 --volume /mnt/c/Steam/steamapps/workshop:/workshop:ro zomboid-map-index-worker"
+  rm -f "${WORK}/docker-calls"
+  FAKE_NO_PLAN=1 bash "${clone}/worker/run.sh" --drop-downloads > /dev/null || fail "run.sh failed dropping downloads"
+  expect_eq "$(sed -n 2p "${WORK}/docker-calls")" "run --rm --volume zomboid-map-index-cache:/cache --volume ${clone}/items:/items --env REPO=${remote%.git} --env DROP_DOWNLOADS=1 zomboid-map-index-worker"
 }
 
 test_library() {
