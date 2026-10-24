@@ -11,6 +11,9 @@ on:
       top:
         description: How many of the most subscribed maps to look through (empty takes the DISCOVER_TOP variable, 500 unless set)
         required: false
+      tags:
+        description: Workshop tags the maps must also have, comma-separated, such as Build 42 (empty takes the DISCOVER_TAGS variable)
+        required: false
 
 permissions:
   contents: read
@@ -36,3 +39,4 @@ jobs:
           DISCOVER_TOP: ${{ inputs.top || vars.DISCOVER_TOP || 500 }}
           DISCOVER_QUEUE: ${{ vars.DISCOVER_QUEUE || 50 }}
           DISCOVER_COUNT: ${{ inputs.count }}
+          DISCOVER_TAGS: ${{ inputs.tags || vars.DISCOVER_TAGS }}

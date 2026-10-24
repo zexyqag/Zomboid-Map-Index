@@ -851,6 +851,12 @@ issue | create | --title | Add First (1001) | --label | add,ready | --body | Fir
   expect_eq "$(query)" "*"
   FAKE_RANKED="$(seq -s ' ' 1001 1200)" discover 500 10 > /dev/null || fail "the check failed with whole pages"
   expect_eq "$(query)" "* after100 after200"
+  # Maps with more tags than Map, spaces around each left out.
+  out="$(DISCOVER_TAGS=' Build 42 ,,Vehicles' discover 150 3)" || fail "the check failed with tags"
+  expect_eq "$(cat "${WORK}/query-calls")" "key=fake-key query_type=9 appid=108600 requiredtags[0]=Map requiredtags[1]=Build 42 requiredtags[2]=Vehicles numperpage=100 cursor=* ids_only=true"
+  expect_eq "$(calls | grep -c 'First is number 1 of the most subscribed maps tagged Build 42 and Vehicles on the Workshop')" 1
+  out="$(DISCOVER_TAGS='Build 42' discover 5 10)" || fail "the check failed with a tag and a short top"
+  expect_eq "${out}" "Queued 3 of the 9 items wanted: the index has or queues the rest of the 5 most subscribed maps tagged Build 42."
   # So many issues, however full the queue.
   out="$(DISCOVER_COUNT=2 discover 150 1)" || fail "the check failed with a count"
   expect_eq "${out}" "Queued 2 items."
