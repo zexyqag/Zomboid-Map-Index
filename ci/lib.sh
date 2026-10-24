@@ -1,6 +1,6 @@
 #!/bin/bash
-# Shared by the request and freshness checks: Steam's public details of Workshop items, the items of the
-# index and the issues that queue work for the worker.
+# Shared by the checks and the worker: Steam's public details of Workshop items, the items of the index and of a
+# Steam library, and the issues that queue work for the worker.
 
 STEAM_DETAILS=https://api.steampowered.com/ISteamRemoteStorage/GetPublishedFileDetails/v1/
 # Project Zomboid's app on the Workshop.
@@ -31,6 +31,21 @@ item_problem() {
     elif (.banned // 0) != 0 then "banned"
     elif any(.tags[]?; .tag == "Map") | not then "tag"
     else empty end'
+}
+
+installed_items() {
+  # $1 = a Steam library's appworkshop_<app>.acf. Prints "<id>\t<update time>" of each item installed in it.
+  LC_ALL=C awk '
+    { sub(/\r$/, ""); line = $0; gsub(/^[ \t]+|[ \t]+$/, "", line) }
+    line == "{" { path[++depth] = key; next }
+    line == "}" { depth--; next }
+    match(line, /^"[^"]*"[ \t]+"[^"]*"$/) {
+      split(line, part, "\"")
+      if (depth == 3 && path[2] == "WorkshopItemsInstalled" && part[2] == "timeupdated") print path[3] "\t" part[4]
+      next
+    }
+    match(line, /^"[^"]*"$/) { key = substr(line, 2, length(line) - 2) }
+  ' "$1"
 }
 
 indexed_time() {

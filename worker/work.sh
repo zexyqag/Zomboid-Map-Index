@@ -18,17 +18,7 @@ local_copy() {
   # appworkshop_<app>.acf there says it is as new.
   local acf="${workshop}/appworkshop_${WORKSHOP_APP}.acf" updated
   [ -f "${acf}" ] && [ -d "${workshop}/content/${WORKSHOP_APP}/$1" ] || return 0
-  updated="$(LC_ALL=C awk -v id="$1" '
-    { sub(/\r$/, ""); line = $0; gsub(/^[ \t]+|[ \t]+$/, "", line) }
-    line == "{" { path[++depth] = key; next }
-    line == "}" { depth--; next }
-    match(line, /^"[^"]*"[ \t]+"[^"]*"$/) {
-      split(line, part, "\"")
-      if (depth == 3 && path[2] == "WorkshopItemsInstalled" && path[3] == id && part[2] == "timeupdated") print part[4]
-      next
-    }
-    match(line, /^"[^"]*"$/) { key = substr(line, 2, length(line) - 2) }
-  ' "${acf}")"
+  updated="$(installed_items "${acf}" | awk -F '\t' -v id="$1" '$1 == id { print $2 }')"
   if [[ "${updated}" =~ ^[0-9]+$ ]] && [ "${updated}" -ge "$2" ]; then
     printf '%s\n' "${workshop}/content/${WORKSHOP_APP}/$1"
   fi
@@ -52,8 +42,14 @@ download() {
   return 1
 }
 
-issues="$(curl -fsS --max-time 30 -H 'Accept: application/vnd.github+json' \
-  "https://api.github.com/repos/${REPO:?}/issues?state=open&labels=ready&per_page=100")"
+issues="$(mktemp)"
+trap 'rm -f "${issues}"' EXIT
+for ((page = 1; ; page++)); do
+  page_issues="$(curl -fsS --max-time 30 -H 'Accept: application/vnd.github+json' \
+    "https://api.github.com/repos/${REPO:?}/issues?state=open&labels=ready&per_page=100&page=${page}")"
+  printf '%s\n' "${page_issues}" >> "${issues}"
+  [ "$(jq 'length' <<< "${page_issues}")" -eq 100 ] || break
+done
 while IFS=$'\t' read -r number id kind title; do
   if [ "${id}" = - ] || [ "${kind}" = - ]; then
     printf '%s\t-\t-\t%s\tits title has no Workshop ID or it has no add, update or gone label\n' "${number}" "${title}"
@@ -98,6 +94,6 @@ while IFS=$'\t' read -r number id kind title; do
     rm -f "${items}/${id}.json.new"
     printf '%s\t%s\t%s\t%s\tits files could not be read\n' "${number}" "${kind}" "${id}" "${name}"
   fi
-done < <(jq -r '.[] | select(.pull_request | not) | [.number, ((.title | capture("\\((?<id>[0-9]+)\\)$").id) // "-"),
+done < <(jq -r -s 'add | .[] | select(.pull_request | not) | [.number, ((.title | capture("\\((?<id>[0-9]+)\\)$").id) // "-"),
   ([.labels[].name] | if index("gone") then "gone" elif index("update") then "update" elif index("add") then "add" else "-" end), .title] | @tsv' \
-  <<< "${issues}")
+  "${issues}")

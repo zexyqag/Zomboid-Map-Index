@@ -14,12 +14,17 @@ expect_eq() {
 }
 
 # Steam answers from FAKE_ITEMS ({"<id>": details}); an ID it doesn't have gets result 9, and it leaves out
-# FAKE_STEAM_SKIP. GitHub lists FAKE_ISSUES.
+# FAKE_STEAM_SKIP. GitHub lists FAKE_ISSUES, then FAKE_ISSUES_2 as the second page.
 mkdir -p "${WORK}/bin"
 cat > "${WORK}/bin/curl" <<'EOF'
 #!/bin/bash
 if [[ "${*: -1}" == https://api.github.com/* ]]; then
-  printf '%s\n' "${FAKE_ISSUES:-[]}"
+  printf '%s\n' "${*: -1}" >> "${WORK}/github-calls"
+  case "${*: -1}" in
+    *'&page=1') printf '%s\n' "${FAKE_ISSUES:-[]}" ;;
+    *'&page=2') printf '%s\n' "${FAKE_ISSUES_2:-[]}" ;;
+    *) echo '[]' ;;
+  esac
   exit 0
 fi
 [ -n "${FAKE_STEAM_DOWN:-}" ] && exit 7
@@ -30,11 +35,15 @@ done
 printf '%s\n' "${ids[@]}" | jq -R . | jq -s -c --argjson items "${FAKE_ITEMS:-{\}}" \
   '{response: {publishedfiledetails: map(. as $id | $items[$id] // {publishedfileid: $id, result: 9})}}'
 EOF
-# gh logs each call on a line, its arguments joined by " | ", and lists FAKE_OPEN as the open issues.
+# gh logs each call on a line, its arguments joined by " | ", lists FAKE_OPEN as the open issues and numbers the
+# issues it creates from 20.
 cat > "${WORK}/bin/gh" <<'EOF'
 #!/bin/bash
 (IFS='|'; printf '%s\n' "$*" | sed 's/|/ | /g') >> "${WORK}/gh-calls"
 [ "$1 $2" = "issue list" ] && printf '%s\n' "${FAKE_OPEN:-[]}"
+if [ "$1 $2" = "issue create" ]; then
+  echo "https://github.com/owner/index/issues/$((20 + $(grep -c '^issue | create' "${WORK}/gh-calls") - 1))"
+fi
 exit 0
 EOF
 chmod +x "${WORK}/bin/curl" "${WORK}/bin/gh"
@@ -238,8 +247,11 @@ EOF
     {"number": 7, "title": "Add Broken (321)", "labels": [{"name": "add"}, {"name": "ready"}]},
     {"number": 9, "title": "Add Partial (322)", "labels": [{"name": "add"}, {"name": "ready"}]},
     {"number": 10, "title": "Update Untagged (333)", "labels": [{"name": "update"}, {"name": "ready"}]},
-    {"number": 11, "title": "Add Details Only (654)", "labels": [{"name": "add"}, {"name": "ready"}]},
     {"number": 8, "title": "A fix (123)", "labels": [{"name": "ready"}], "pull_request": {}}]'
+  # A full first page, so the worker asks for the second.
+  FAKE_ISSUES="$(jq -c '. + [range(100 - length) | {number: (100 + .), title: "A fix (123)", labels: [{name: "ready"}], pull_request: {}}]' <<< "${FAKE_ISSUES}")"
+  export FAKE_ISSUES_2='[{"number": 11, "title": "Add Details Only (654)", "labels": [{"name": "add"}, {"name": "ready"}]}]'
+  rm -f "${WORK}/github-calls"
   local out worker="${REPO}/worker/work.sh"
   out="$(REPO=owner/index ITEMS_DIR="${dir}/items" CACHE_DIR="${dir}/cache" WORKSHOP_DIR="${dir}/library" STEAMCMDDIR="${dir}/steamcmd" \
     bash "${worker}" 2> "${WORK}/work-err")" || fail "the worker failed: $(cat "${WORK}/work-err")"
@@ -256,6 +268,8 @@ EOF
   expect_eq "$(sed -E 's/.* ([0-9]+) \+quit$/\1/' "${WORK}/steamcmd-calls" | paste -sd ' ')" "123 789 321 321 321 322 322 322 654"
   expect_eq "$(head -n 1 "${WORK}/steamcmd-calls")" "+force_install_dir ${dir}/cache +login anonymous +workshop_download_item 108600 123 +quit"
   grep -q '^Reading Local Map (456) from the Steam library$' "${WORK}/work-err" || fail "no word of the library copy: $(cat "${WORK}/work-err")"
+  expect_eq "$(sed -E 's/.*&page=//' "${WORK}/github-calls" | paste -sd ' ')" "1 2"
+  expect_eq "$(head -n 1 "${WORK}/github-calls")" "https://api.github.com/repos/owner/index/issues?state=open&labels=ready&per_page=100&page=1"
 }
 
 test_worker_run() {
@@ -292,7 +306,88 @@ EOF
   expect_eq "$(sed -n 2p "${WORK}/docker-calls")" "run --rm --volume zomboid-map-index-cache:/cache --volume ${clone}/items:/items --env REPO=${remote%.git} --volume /mnt/c/Steam/steamapps/workshop:/workshop:ro zomboid-map-index-worker"
 }
 
-for t in test_request test_freshness test_index_item test_work test_worker_run; do
+test_library() {
+  TEST=library
+  local remote="${WORK}/library-remote.git" clone="${WORK}/library-clone" library="${WORK}/library" out
+  export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null
+  git init --quiet --bare --initial-branch=main "${remote}"
+  git clone --quiet "${remote}" "${clone}" 2> /dev/null
+  mkdir -p "${clone}/worker" "${clone}/items" "${library}" "${WORK}/library-bin"
+  cp -r "${REPO}/ci" "${clone}/"
+  cp "${REPO}/worker/library.sh" "${clone}/worker/"
+  printf '{"id": "111"}\n' > "${clone}/items/111.json"
+  git -C "${clone}" add --all
+  git -C "${clone}" -c user.name=Test -c user.email=test@example.com commit --quiet -m start
+  git -C "${clone}" push --quiet origin main
+  # Installed: an indexed map, a queued one, an item not tagged Map, three maps to offer, a banned one and one the
+  # Workshop doesn't have. 999 is only in the details, so it isn't installed.
+  {
+    printf '%s\n' '"AppWorkshop"' '{' '	"WorkshopItemsInstalled"' '	{'
+    for id in 111 222 333 444 555 666 777 888; do
+      printf '%s\n' "		\"${id}\"" '		{' '			"size"		"1"' '			"timeupdated"		"5"' '		}'
+    done
+    printf '%s\n' '	}' '	"WorkshopItemDetails"' '	{' '		"999"' '		{' '			"timeupdated"		"5"' '		}' '	}' '}'
+  } > "${library}/appworkshop_108600.acf"
+  export FAKE_ITEMS FAKE_OPEN='[{"number": 3, "title": "Add Queued Map (222)"}, {"number": 4, "title": "Add a map"}]'
+  FAKE_ITEMS="$(jq -n -c --argjson indexed "$(details 111 "Indexed Map" 5)" --argjson queued "$(details 222 "Queued Map" 5)" \
+    --argjson mod "$(details 333 "A Mod" 5 108600 0 "Build 42,Items")" --argjson beta "$(details 444 "Beta Map" 5)" \
+    --argjson alpha "$(details 555 "alpha Map" 5)" --argjson banned "$(details 666 "Banned Map" 5 108600 1)" \
+    --argjson gamma "$(details 777 "Gamma Map" 5)" --argjson details "$(details 999 "Details Only" 5)" \
+    '{"111": $indexed, "222": $queued, "333": $mod, "444": $beta, "555": $alpha, "666": $banned, "777": $gamma, "999": $details}')"
+  printf '#!/bin/bash\nprintf "%%s\\n" "$*" >> "${WORK}/sleep-calls"\n' > "${WORK}/library-bin/sleep"
+  chmod +x "${WORK}/library-bin/sleep"
+  PATH="${WORK}/library-bin:${PATH}"
+  local list
+  list="Maps in ${library} that the index doesn't have:
+   1  alpha Map (555), 115 MB
+   2  Beta Map (444), 115 MB
+   3  Gamma Map (777), 115 MB"
+  body() { printf 'issue | create | --title | Add a map | --label | add | --body | ### Workshop item\n\nhttps://steamcommunity.com/sharedfiles/filedetails/?id=%s\n' "$@"; }
+  library() {
+    rm -f "${WORK}/gh-calls" "${WORK}/sleep-calls"
+    WORKSHOP_DIR="${library}" bash "${clone}/worker/library.sh" <<< "$1"
+  }
+
+  out="$(library '1 3')" || fail "the pick failed"
+  expect_eq "${out}" "${list}
+alpha Map: https://github.com/owner/index/issues/20
+Gamma Map: https://github.com/owner/index/issues/21
+Once the request check queues them, run: WORKSHOP_DIR=\"${library}\" ./worker/run.sh"
+  expect_eq "$(calls)" "issue | list | --state | open | --limit | 1000 | --json | number,title
+$(body 555 777)"
+  expect_eq "$(cat "${WORK}/sleep-calls")" "1"
+  # Every one, once, in the list's order.
+  for answer in all '3,1-2 2' ' 03 01-02 '; do
+    library "${answer}" > /dev/null || fail "the pick '${answer}' failed"
+    expect_eq "$(calls | grep -v '^issue | list')" "$(body 555 444 777)"
+  done
+  # Nothing picked, or a pick that isn't in the list, opens nothing.
+  out="$(library '')" || fail "picking nothing failed"
+  expect_eq "${out}" "${list}"
+  expect_eq "$(calls | grep -c '^issue | create')" 0
+  for answer in 4 0 2-1 1-4 'x' '1 x' '1-' '*'; do
+    library "${answer}" > /dev/null 2>&1 && fail "the pick '${answer}' passed"
+    expect_eq "$(calls | grep -c '^issue | create')" 0
+  done
+  expect_eq "$(library 4 2>&1 > /dev/null)" "Not in the list: 4"
+  expect_eq "$(library x 2>&1 > /dev/null)" "Not a number, a range or all: x"
+  # Without Steam it stops before asking.
+  FAKE_STEAM_DOWN=1 library 1 > /dev/null 2>&1 && fail "it passed without Steam"
+  expect_eq "$(calls | grep -c '^issue | create')" 0
+  # A map indexed since: the clone pulls it first.
+  git clone --quiet "${remote}" "${WORK}/library-other" 2> /dev/null
+  printf '{"id": "555"}\n' > "${WORK}/library-other/items/555.json"
+  git -C "${WORK}/library-other" add --all
+  git -C "${WORK}/library-other" -c user.name=Test -c user.email=test@example.com commit --quiet -m more
+  git -C "${WORK}/library-other" push --quiet origin main
+  expect_eq "$(library '' | sed -n 2p)" "   1  Beta Map (444), 115 MB"
+  # Nothing left to offer, and a folder that isn't a library.
+  FAKE_OPEN='[{"number": 3, "title": "Add Queued Map (222)"}, {"number": 5, "title": "Add Beta Map (444)"}, {"number": 6, "title": "Add Gamma Map (777)"}]' out="$(library 1)" || fail "nothing to offer failed"
+  expect_eq "${out}" "The index has or queues every map in ${library}."
+  expect_eq "$(WORKSHOP_DIR="${WORK}" bash "${clone}/worker/library.sh" < /dev/null 2>&1)" "${WORK} has no Project Zomboid items: ${WORK}/appworkshop_108600.acf is missing"
+}
+
+for t in test_request test_freshness test_index_item test_work test_worker_run test_library; do
   ("${t}"; exit "${FAILED}") || FAILED=1
 done
 if [ "${FAILED}" = 0 ]; then echo "Tests passed"; else echo "Tests failed"; exit 1; fi
