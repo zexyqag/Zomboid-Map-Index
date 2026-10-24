@@ -1,16 +1,27 @@
 #!/bin/bash
-# Runs the worker as a service: every INTERVAL (a duration sleep takes, 6h by default) it brings its clone of REMOTE
-# (git@github.com:<REPO>.git by default) in CLONE_DIR (/repo by default) up to date, works through the queued requests
-# with work.sh and commits and pushes what comes of each as it comes. DEPLOY_KEY can name a private SSH key for the
-# remote, such as a deploy key with write access, which it makes when there is none; each start prints its public key.
-# The hosts it reaches are remembered in CACHE_DIR. Commits carry git's GIT_AUTHOR_NAME, GIT_AUTHOR_EMAIL,
-# GIT_COMMITTER_NAME and GIT_COMMITTER_EMAIL. What a round that fails didn't push is tried again the next time.
+# Runs the worker as a service for the repository REPO (owner/name). Every POLL (a duration sleep takes, 5m by
+# default) it asks GitHub which open issue labelled ready changed last, and starts a round when one changed since the
+# last round began, or when INTERVAL (whole seconds, or minutes, hours or days with m, h or d; 6h by default) has
+# passed since then, so what failed is tried again. A round brings its clone of REMOTE (git@github.com:<REPO>.git by
+# default) in CLONE_DIR (/repo by default) up to date, works through the queued requests with work.sh and commits and
+# pushes what comes of each as it comes. DEPLOY_KEY can name a private SSH key for the remote, such as a deploy key
+# with write access, which it makes when there is none; each start prints its public key. The hosts it reaches are
+# remembered in CACHE_DIR. Commits carry git's GIT_AUTHOR_NAME, GIT_AUTHOR_EMAIL, GIT_COMMITTER_NAME and
+# GIT_COMMITTER_EMAIL.
 set -euo pipefail
 here="$(dirname "$0")"
 
-remote="${REMOTE:-git@github.com:${REPO:?}.git}"
+repo="${REPO:?}"
+remote="${REMOTE:-git@github.com:${repo}.git}"
 clone="${CLONE_DIR:-/repo}"
+poll="${POLL:-5m}"
 interval="${INTERVAL:-6h}"
+if ! [[ "${interval}" =~ ^([0-9]+)([smhd]?)$ ]]; then
+  echo "INTERVAL is '${interval}', not a duration such as 6h" >&2
+  exit 1
+fi
+declare -A unit=([s]=1 [m]=60 [h]=3600 [d]=86400)
+retry=$((10#${BASH_REMATCH[1]} * ${unit[${BASH_REMATCH[2]:-s}]}))
 
 if [ -n "${DEPLOY_KEY:-}" ]; then
   [ -f "${DEPLOY_KEY}" ] || ssh-keygen -q -t ed25519 -N '' -f "${DEPLOY_KEY}"
@@ -31,8 +42,24 @@ round() {
     && ITEMS_DIR="${clone}/items" "${here}/work.sh" | (cd "${clone}" && "${here}/commit.sh")
 }
 
+changed() {
+  # Prints when the open issue labelled ready that changed last changed, by GitHub's clock, or nothing when none is.
+  curl -fsS --max-time 30 -H 'Accept: application/vnd.github+json' \
+    "https://api.github.com/repos/${repo}/issues?state=open&labels=ready&sort=updated&direction=desc&per_page=1" \
+    | jq -r '.[0].updated_at // ""'
+}
+
+# When the last round began: the last change it saw, and the time to try again what it left.
+seen=''
+due=0
 while true; do
-  echo "Working through the queued requests"
-  round || echo "This round failed; the next one is in ${interval}" >&2
-  sleep "${interval}"
+  if ! last="$(changed)"; then
+    echo "GitHub's list of queued requests could not be read; asking again in ${poll}" >&2
+  elif [ -n "${last}" ] && { [[ "${last}" > "${seen}" ]] || [ "$(date +%s)" -ge "${due}" ]; }; then
+    seen="${last}"
+    due=$(($(date +%s) + retry))
+    echo "Working through the queued requests"
+    round || echo "This round failed; what it didn't push is tried again in ${interval}, or sooner when a request changes" >&2
+  fi
+  sleep "${poll}"
 done

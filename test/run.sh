@@ -16,7 +16,9 @@ expect_eq() {
 # Steam answers from FAKE_ITEMS ({"<id>": details}); an ID it doesn't have gets result 9, and it leaves out
 # FAKE_STEAM_SKIP. Its keyed details answer the same, log their parameters and fail with FAKE_FULL_DOWN. Its Workshop
 # query ranks FAKE_RANKED (IDs separated by spaces), 100 a page with a cursor to the next (none with FAKE_NO_CURSOR),
-# and logs its parameters. GitHub lists FAKE_ISSUES, then FAKE_ISSUES_2 as the second page.
+# and logs its parameters. GitHub lists FAKE_ISSUES, then FAKE_ISSUES_2 as the second page; asked for the ready issue
+# that changed last, it answers with the next time of FAKE_CHANGES (separated by spaces, - for none ready, the last one
+# again once they run out), and fails with FAKE_POLL_DOWN.
 mkdir -p "${WORK}/bin"
 cat > "${WORK}/bin/curl" <<'EOF'
 #!/bin/bash
@@ -25,6 +27,12 @@ if [[ "${*: -1}" == https://api.github.com/* ]]; then
   case "${*: -1}" in
     *'&page=1') printf '%s\n' "${FAKE_ISSUES:-[]}" ;;
     *'&page=2') printf '%s\n' "${FAKE_ISSUES_2:-[]}" ;;
+    *'&per_page=1')
+      [ -n "${FAKE_POLL_DOWN:-}" ] && exit 22
+      read -r -a changes <<< "${FAKE_CHANGES:--}"
+      polls="$(grep -c 'per_page=1$' "${WORK}/github-calls")"
+      change="${changes[$((polls <= ${#changes[@]} ? polls - 1 : ${#changes[@]} - 1))]}"
+      if [ "${change}" = - ]; then echo '[]'; else printf '[{"number": 5, "updated_at": "%s"}]\n' "${change}"; fi ;;
     *) echo '[]' ;;
   esac
   exit 0
@@ -73,13 +81,23 @@ if [ "$1 $2" = "issue create" ]; then
 fi
 exit 0
 EOF
-# sleep logs what it is asked to wait, and doesn't; with FAKE_SLEEP_STOP it fails.
+# sleep logs what it is asked to wait, and doesn't; the FAKE_SLEEP_STOPth time it fails.
 cat > "${WORK}/bin/sleep" <<'EOF'
 #!/bin/bash
 printf '%s\n' "$*" >> "${WORK}/sleep-calls"
-[ -z "${FAKE_SLEEP_STOP:-}" ]
+[ -z "${FAKE_SLEEP_STOP:-}" ] || [ "$(wc -l < "${WORK}/sleep-calls")" -lt "${FAKE_SLEEP_STOP}" ]
 EOF
-chmod +x "${WORK}/bin/curl" "${WORK}/bin/gh" "${WORK}/bin/sleep"
+# date tells the time, but with FAKE_CLOCK_STEP its seconds since 1970 are that many more each time it is asked, from 0.
+cat > "${WORK}/bin/date" <<'EOF'
+#!/bin/bash
+if [ "$*" = +%s ] && [ -n "${FAKE_CLOCK_STEP:-}" ]; then
+  echo >> "${WORK}/clock-calls"
+  echo $(($(wc -l < "${WORK}/clock-calls") * FAKE_CLOCK_STEP))
+else
+  command -p date "$@"
+fi
+EOF
+chmod +x "${WORK}/bin/curl" "${WORK}/bin/gh" "${WORK}/bin/sleep" "${WORK}/bin/date"
 export WORK PATH="${WORK}/bin:${PATH}"
 
 # The room and version readers, built as the worker image builds them.
@@ -468,8 +486,9 @@ EOF
   expect_eq "$(sed -n 2p "${WORK}/docker-calls")" "run --rm --volume zomboid-map-index-cache:/cache --volume ${clone}/items:/items --env REPO=${remote%.git} --env DROP_DOWNLOADS=1 zomboid-map-index-worker"
 }
 
-# The service, stopped by the fake sleep after its first round. work.sh is a fake that writes 123 and plans it and 456,
-# which is unchanged, and logs the items folder it gets and the key ssh would use, with its mode and first line.
+# The service of owner/index, stopped by the fake sleep (after its first poll, or STOPS polls) with a ready issue that
+# changed (or FAKE_CHANGES). work.sh is a fake that writes 123 and plans it and 456, which is unchanged, and logs the
+# items folder it gets and the key ssh would use, with its mode and first line.
 test_serve() {
   TEST=serve
   local remote="${WORK}/serve-remote.git" seed="${WORK}/serve-seed" worker="${WORK}/serve-worker" clone="${WORK}/serve-clone"
@@ -493,16 +512,17 @@ EOF
   chmod +x "${worker}/work.sh"
   export GIT_AUTHOR_NAME=Worker GIT_AUTHOR_EMAIL=worker@example.com GIT_COMMITTER_NAME=Worker GIT_COMMITTER_EMAIL=worker@example.com
   serve() {
-    rm -f "${WORK}/sleep-calls" "${WORK}/work-calls"
-    FAKE_SLEEP_STOP=1 CLONE_DIR="${clone}" bash "${worker}/serve.sh" > "${WORK}/serve-out" 2> "${WORK}/serve-err" \
-      && fail "serve.sh stopped without the fake sleep"
+    rm -f "${WORK}/sleep-calls" "${WORK}/work-calls" "${WORK}/github-calls" "${WORK}/clock-calls"
+    FAKE_CHANGES="${FAKE_CHANGES:-2026-10-24T10:00:00Z}" FAKE_SLEEP_STOP="${STOPS:-1}" REPO=owner/index CLONE_DIR="${clone}" \
+      bash "${worker}/serve.sh" > "${WORK}/serve-out" 2> "${WORK}/serve-err" && fail "serve.sh stopped without the fake sleep"
   }
   REMOTE="${remote}" serve
   expect_eq "$(cat "${WORK}/serve-out")" "$(printf '%s\n' 'Working through the queued requests' '#1 Town Pack: add' '#2 Same: unchanged')"
   expect_eq "$(cat "${WORK}/serve-err")" ''
   expect_eq "$(git -C "${remote}" log -1 --format='%an|%cn|%s|%b' main)" 'Worker|Worker|data: add Town Pack (123)|Closes #1'
   expect_eq "$(cat "${WORK}/work-calls")" "${clone}/items||"
-  expect_eq "$(cat "${WORK}/sleep-calls")" 6h
+  expect_eq "$(cat "${WORK}/github-calls")" 'https://api.github.com/repos/owner/index/issues?state=open&labels=ready&sort=updated&direction=desc&per_page=1'
+  expect_eq "$(cat "${WORK}/sleep-calls")" 5m
   # The next round starts from the remote as it is, now at another place, without what the clone had of its own, and
   # with the key.
   printf '{"id": "789"}\n' > "${seed}/items/789.json"
@@ -518,7 +538,7 @@ EOF
   printf 'stray\n' > "${clone}/stray"
   ssh-keygen -q -t ed25519 -N '' -f "${WORK}/deploy-key"
   chmod 644 "${WORK}/deploy-key"
-  REMOTE="${remote}" INTERVAL=30m DEPLOY_KEY="${WORK}/deploy-key" CACHE_DIR="${WORK}/serve-cache" serve
+  REMOTE="${remote}" POLL=30m DEPLOY_KEY="${WORK}/deploy-key" CACHE_DIR="${WORK}/serve-cache" serve
   expect_eq "$(cat "${WORK}/serve-out")" "$(printf '%s\n' "Deploy key: $(cat "${WORK}/deploy-key.pub")" \
     'Working through the queued requests' '#1 Town Pack: unchanged' '#2 Same: unchanged')"
   expect_eq "$(git -C "${clone}" log --format=%s | paste -sd ' ')" 'elsewhere data: add Town Pack (123) start'
@@ -539,9 +559,33 @@ EOF
   # A round that fails waits for the next, as the remote may be back by then.
   rm -rf "${clone}"
   REMOTE="${WORK}/missing.git" INTERVAL=30m serve
-  expect_eq "$(tail -n 1 "${WORK}/serve-err")" 'This round failed; the next one is in 30m'
-  expect_eq "$(cat "${WORK}/sleep-calls")" 30m
+  expect_eq "$(tail -n 1 "${WORK}/serve-err")" "This round failed; what it didn't push is tried again in 30m, or sooner when a request changes"
+  expect_eq "$(cat "${WORK}/sleep-calls")" 5m
   [ -e "${WORK}/work-calls" ] && fail "serve.sh worked without a clone"
+  # A round only when a ready issue changed since the last began, and none when none is ready.
+  FAKE_CHANGES='2026-10-24T10:00:00Z 2026-10-24T10:00:00Z 2026-10-24T11:00:00Z - 2026-10-24T11:00:00Z' STOPS=5 REMOTE="${remote}" serve
+  expect_eq "$(grep -c '^Working through' "${WORK}/serve-out")" 2
+  expect_eq "$(paste -sd ' ' "${WORK}/sleep-calls")" '5m 5m 5m 5m 5m'
+  expect_eq "$(wc -l < "${WORK}/github-calls")" 5
+  # Again once INTERVAL has passed, in seconds, minutes, hours or days, by a clock that moves half of it a time; not
+  # when none is ready.
+  for interval in 60:30 60s:30 1m:30 1h:1800 1d:43200 08h:14400; do
+    FAKE_CLOCK_STEP="${interval#*:}" STOPS=5 INTERVAL="${interval%:*}" REMOTE="${remote}" serve
+    expect_eq "$(grep -c '^Working through' "${WORK}/serve-out")" 3
+  done
+  FAKE_CHANGES=- STOPS=3 INTERVAL=0 REMOTE="${remote}" serve
+  [ -e "${WORK}/work-calls" ] && fail "serve.sh worked with none ready"
+  # When GitHub can't be read, it asks again.
+  FAKE_POLL_DOWN=1 STOPS=2 REMOTE="${remote}" serve
+  expect_eq "$(cat "${WORK}/serve-err")" "$(printf '%s\n' "GitHub's list of queued requests could not be read; asking again in 5m" "GitHub's list of queued requests could not be read; asking again in 5m")"
+  [ -e "${WORK}/work-calls" ] && fail "serve.sh worked without GitHub's list"
+  for bad in '6 hours' 6x h 1.5h; do
+    rm -f "${WORK}/sleep-calls"
+    (export INTERVAL="${bad}"; FAKE_SLEEP_STOP=1 REPO=owner/index REMOTE="${remote}" CLONE_DIR="${clone}" bash "${worker}/serve.sh" > /dev/null 2> "${WORK}/serve-err") \
+      && fail "serve.sh took INTERVAL '${bad}'"
+    expect_eq "$(cat "${WORK}/serve-err")" "INTERVAL is '${bad}', not a duration such as 6h"
+    [ -e "${WORK}/sleep-calls" ] && fail "serve.sh waited with INTERVAL '${bad}'"
+  done
   # Each result is pushed as it comes, before the round ends, and a round that fails keeps what it pushed.
   cat > "${worker}/work.sh" <<'EOF'
 #!/bin/bash
@@ -557,7 +601,7 @@ EOF
   FAKE_REMOTE="${remote}" REMOTE="${remote}" serve
   expect_eq "$(cat "${WORK}/work-calls")" pushed
   expect_eq "$(cat "${WORK}/serve-out")" "$(printf '%s\n' 'Working through the queued requests' '#3 Early: add')"
-  expect_eq "$(tail -n 1 "${WORK}/serve-err")" 'This round failed; the next one is in 6h'
+  expect_eq "$(tail -n 1 "${WORK}/serve-err")" "This round failed; what it didn't push is tried again in 6h, or sooner when a request changes"
   # The remote is the repository on GitHub by default.
   mkdir -p "${WORK}/serve-bin"
   printf '#!/bin/bash\nprintf "%%s\\n" "$*" >> "${WORK}/ssh-calls"\nexit 1\n' > "${WORK}/serve-bin/ssh"
