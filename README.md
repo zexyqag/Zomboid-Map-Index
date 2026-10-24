@@ -22,6 +22,22 @@ The checks run on GitHub Actions and only read public information from the Works
 
 The repository's GitHub Pages publish the whole index as `index.json`, `{"items": [...]}` with every entry of `items/` by Workshop ID, and the grid script as `grid-1.js`: an ES module that works out which maps are on each cell in `Map=` order and draws the cells on a canvas, for pages that show maps. A change to how pages call it comes as `grid-2.js`.
 
+`build-41.json` and `build-42.json` say what of each item the current version of that build loads, as the game reads the mods' `mod.info` files:
+
+- `gameVersion`: the version.
+- `items`: by Workshop ID, with `id`, `title`, `timeUpdated` and `mods`, one per mod folder with a `mod.info`:
+  - `folder`, and `id` and `name` from the `mod.info` the game reads.
+  - `versionFolder`: the folder its files come from besides `common/`, `""` for the mod folder itself, `null` when the game doesn't find the mod on this version.
+  - `loads`, and `error`: why the game doesn't find or load the mod or, for one that loads, why it doesn't load what it requires by itself. When a mod doesn't load and has no error, its `versionMin` or `versionMax` keeps it out.
+  - `require` and `incompatible`: mod IDs.
+  - `zoneLoader`: as in the entries, from the first folder it reads with one.
+  - `maps`: its maps by their place in `maps`. Only mods that load have maps.
+- `maps`: the maps of the mods that load, with their `item`, `folder` and `name`, and the rest from the first of the mod's folders (its version folder, then `common/`) that has it: `cells`, `spawns` (how many spawn points, `null` without `spawnpoints.lua`), `zones`, and `title`, the English title the game shows for a map with a `map.info`, from the translation this version reads, else from `map.info` (`null` without one).
+- `conflicts`: `[map, map, cells]` for each two maps that share cells, by their place in `maps`, with how many they share.
+- `providers`: by mod ID, the Workshop IDs of the items with a mod of that ID that loads.
+
+They leave out entries of the first format, which are read again soon, and entries with a folder name no folder can have.
+
 ## Data
 
 `items/<workshop id>.json` holds one Workshop item: `format` (the version of this format, now 2; entries of an older one are read again), `id`, `title`, `timeUpdated` (the Workshop's update time it was read at) and `mods`, one per folder in the item's `mods/`:

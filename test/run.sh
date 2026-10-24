@@ -573,6 +573,7 @@ test_site() {
   mkdir -p "${repo}/items" "${repo}/site"
   cp -r "${REPO}/ci" "${repo}/"
   cp "${REPO}/site/grid.js" "${repo}/site/"
+  export GAME_VERSIONS='41.78.16 42.21.0'
   # Without entries, an empty index.
   bash "${repo}/ci/site.sh" "${WORK}/site-empty" || fail "the build failed without entries"
   expect_eq "$(cat "${WORK}/site-empty/index.json")" '{"items":[]}'
@@ -582,14 +583,113 @@ test_site() {
   cp "${REPO}/items/LICENSE" "${repo}/items/"
   bash "${repo}/ci/site.sh" "${WORK}/site" || fail "the build failed"
   expect_eq "$(cat "${WORK}/site/index.json")" '{"items":[{"id":"3","title":"Three"},{"id":"20","title":"Twenty"}]}'
-  expect_eq "$(ls "${WORK}/site" | paste -sd ' ')" "grid-1.js index.json"
+  expect_eq "$(ls "${WORK}/site" | paste -sd ' ')" "build-41.json build-42.json grid-1.js index.json"
   cmp -s "${WORK}/site/grid-1.js" "${REPO}/site/grid.js" || fail "grid-1.js isn't site/grid.js"
   # The major version names the script.
   sed -i "s/^export const VERSION = '1\.0\.0';$/export const VERSION = '12.3.4';/" "${repo}/site/grid.js"
   bash "${repo}/ci/site.sh" "${WORK}/site-12" || fail "the build failed for version 12"
-  expect_eq "$(ls "${WORK}/site-12" | paste -sd ' ')" "grid-12.js index.json"
+  expect_eq "$(ls "${WORK}/site-12" | paste -sd ' ')" "build-41.json build-42.json grid-12.js index.json"
   sed -i "s/^export const VERSION = .*/export const VERSION = '2';/" "${repo}/site/grid.js"
   bash "${repo}/ci/site.sh" "${WORK}/site-bad" 2> /dev/null && fail "the build passed without a full version"
+}
+
+# Item 7 has Town, read from 42/ (42.22 is newer than the game) and common/ on Build 42 and from the mod folder itself on
+# Build 41, and Old, which versionMax keeps from Build 41. Next (20) and Fork (100, another TownMod) share cells with
+# Town. Item 3 is of the first format, the folder names of 5, 6 and 8 would leave the mods folder, and 9 has a tab in
+# one.
+test_builds() {
+  TEST=builds
+  local repo="${WORK}/builds-repo" out="${WORK}/builds"
+  mkdir -p "${repo}/items" "${repo}/site"
+  cp -r "${REPO}/ci" "${repo}/"
+  cp "${REPO}/site/grid.js" "${repo}/site/"
+  export GAME_VERSIONS='41.78.16 42.21.0'
+  bash "${repo}/ci/site.sh" "${WORK}/builds-empty" || fail "the build failed without entries"
+  expect_eq "$(cat "${WORK}/builds-empty/build-42.json")" '{"gameVersion":"42.21.0","items":[],"maps":[],"conflicts":[],"providers":{}}'
+  cat > "${repo}/items/7.json" <<'JSON'
+{"format": 2, "id": "7", "title": "Town Pack", "timeUpdated": 1690000000, "mods": [
+  {"folder": "Town", "roots": [
+    {"path": "", "modInfo": ["name=Town 41", "id=TownMod", "require=TilePack"], "zoneLoader": null,
+     "maps": [{"name": "Town", "cells": [[1, 1, 2]], "spawns": [[1, 1, 0]], "rooms": [], "zones": {}, "mapInfo": ["title=Town 41"], "title": "Town 41"}],
+     "translations": [{"name": "Town", "json": "Town JSON 41", "txt": "Town TXT"}]},
+    {"path": "42", "modInfo": ["name=Town", "id=TownMod", "require=\\TilePack, \\Other", "incompatible=Rival"], "zoneLoader": false,
+     "maps": [{"name": "Town", "cells": [[5, 10, 11]], "spawns": null, "rooms": [], "zones": {"objects.lua": 4}, "mapInfo": null, "title": null}],
+     "translations": [{"name": "Town", "json": null, "txt": "Town 42 TXT"}]},
+    {"path": "42.22", "modInfo": ["name=Too new", "id=TownMod"], "zoneLoader": null,
+     "maps": [{"name": "Town", "cells": [[0, 0, 0]], "spawns": [], "rooms": [], "zones": {}, "mapInfo": ["title=Too new"], "title": "Too new"}],
+     "translations": []},
+    {"path": "common", "modInfo": null, "zoneLoader": true,
+     "maps": [{"name": "Town", "cells": [[9, 9, 9]], "spawns": [[1, 1, 0], [2, 2, 0]], "rooms": [], "zones": {"objects.lua": null, "regions.lua": 7},
+               "mapInfo": ["title=Common Town"], "title": "Common Town"},
+              {"name": "Extra", "cells": [[20, 1, 1]], "spawns": null, "rooms": [], "zones": {}, "mapInfo": null, "title": null}],
+     "translations": [{"name": "Town", "json": "Town JSON", "txt": null}, {"name": "Extra", "json": "Extra JSON", "txt": null}]}]},
+  {"folder": "Old", "roots": [{"path": "", "modInfo": ["name=Old", "id=OldMod", "versionMax=41.50"], "zoneLoader": null,
+    "maps": [{"name": "Old", "cells": [[1, 1, 1]], "spawns": null, "rooms": [], "zones": {}, "mapInfo": null, "title": null}], "translations": []}]}]}
+JSON
+  cat > "${repo}/items/20.json" <<'JSON'
+{"format": 2, "id": "20", "title": "Next Door", "timeUpdated": 5, "mods": [{"folder": "Next", "roots": [
+  {"path": "", "modInfo": ["id=NextMod"], "zoneLoader": null,
+   "maps": [{"name": "Next", "cells": [[1, 2, 3]], "spawns": null, "rooms": [], "zones": {}, "mapInfo": ["title=Next 41"], "title": "Next 41"}],
+   "translations": [{"name": "Next", "json": "Next JSON", "txt": null}]},
+  {"path": "42", "modInfo": ["id=NextMod"], "zoneLoader": null,
+   "maps": [{"name": "Next", "cells": [[5, 10, 12], [6, 1, 1]], "spawns": [], "rooms": [], "zones": {}, "mapInfo": ["title=Next"], "title": "Next"}],
+   "translations": [{"name": "Next", "json": null, "txt": "Next TXT"}]}]}]}
+JSON
+  cat > "${repo}/items/100.json" <<'JSON'
+{"format": 2, "id": "100", "title": "Fork", "timeUpdated": 6, "mods": [{"folder": "Fork", "roots": [
+  {"path": "42", "modInfo": ["name=Fork", "id=TownMod"], "zoneLoader": null,
+   "maps": [{"name": "Fork", "cells": [[5, 11, 11]], "spawns": null, "rooms": [], "zones": {}, "mapInfo": null, "title": null}], "translations": []},
+  {"path": "common", "modInfo": null, "zoneLoader": true, "maps": [], "translations": []}]}]}
+JSON
+  printf '{"format": 1, "id": "3", "title": "Older", "timeUpdated": 5, "mods": []}\n' > "${repo}/items/3.json"
+  printf '{"format": 2, "id": "5", "title": "Up", "timeUpdated": 5, "mods": [{"folder": "..", "roots": [{"path": "", "modInfo": ["id=Up"]}]}]}\n' \
+    > "${repo}/items/5.json"
+  printf '{"format": 2, "id": "6", "title": "Down", "timeUpdated": 5, "mods": [{"folder": "Down", "roots": [{"path": "42/x", "modInfo": ["id=Down"]}]}]}\n' \
+    > "${repo}/items/6.json"
+  printf '{"format": 2, "id": "8", "title": "Here", "timeUpdated": 5, "mods": [{"folder": "Here", "roots": [{"path": ".", "modInfo": ["id=Here"]}]}]}\n' \
+    > "${repo}/items/8.json"
+  printf '{"format": 2, "id": "9", "title": "Tab", "timeUpdated": 5, "mods": [{"folder": "A\\tB", "roots": [{"path": "", "modInfo": ["id=Tab"]}]}]}\n' \
+    > "${repo}/items/9.json"
+  bash "${repo}/ci/site.sh" "${out}" 2> "${WORK}/builds-err" || fail "the build failed: $(cat "${WORK}/builds-err")"
+  expect_eq "$(cat "${WORK}/builds-err")" "$(printf '%s\n' \
+    'Warning: item 5 has a folder name no folder can have, so the builds leave it out' \
+    'Warning: item 6 has a folder name no folder can have, so the builds leave it out' \
+    'Warning: item 8 has a folder name no folder can have, so the builds leave it out' \
+    'Warning: item 9 has a folder name no folder can have, so the builds leave it out')"
+  expect_eq "$(jq -c '[.gameVersion, [.items[].id]]' "${out}/build-41.json" "${out}/build-42.json")" \
+    "$(printf '%s\n' '["41.78.16",["7","20","100"]]' '["42.21.0",["7","20","100"]]')"
+  expect_eq "$(jq -c '.items[0]' "${out}/build-42.json")" \
+    '{"id":"7","title":"Town Pack","timeUpdated":1690000000,"mods":[{"folder":"Old","id":"OldMod","name":"Old","versionFolder":null,"loads":false,"error":"no mod.info for this game version","require":[],"incompatible":[],"zoneLoader":null,"maps":[]},{"folder":"Town","id":"TownMod","name":"Town","versionFolder":"42","loads":true,"error":"its require= has spaces around Other","require":["TilePack","Other"],"incompatible":["Rival"],"zoneLoader":false,"maps":[0,1]}]}'
+  expect_eq "$(jq -c '[.items[1:][].mods[] | [.folder, .name, .versionFolder, .loads, .zoneLoader, .maps]]' "${out}/build-42.json")" \
+    '[["Next",null,"42",true,null,[2]],["Fork","Fork","42",true,true,[3]]]'
+  expect_eq "$(jq -c '.maps[]' "${out}/build-42.json")" "$(printf '%s\n' \
+    '{"item":"7","folder":"Town","name":"Extra","title":null,"cells":[[20,1,1]],"spawns":null,"zones":{}}' \
+    '{"item":"7","folder":"Town","name":"Town","title":"Town JSON","cells":[[5,10,11]],"spawns":2,"zones":{"objects.lua":4,"regions.lua":7}}' \
+    '{"item":"20","folder":"Next","name":"Next","title":"Next","cells":[[5,10,12],[6,1,1]],"spawns":0,"zones":{}}' \
+    '{"item":"100","folder":"Fork","name":"Fork","title":null,"cells":[[5,11,11]],"spawns":null,"zones":{}}')"
+  expect_eq "$(jq -c '[.conflicts, .providers]' "${out}/build-42.json")" '[[[1,2,2],[1,3,1],[2,3,1]],{"NextMod":["20"],"TownMod":["7","100"]}]'
+  # Build 41 reads the mod folders themselves.
+  expect_eq "$(jq -c '.items[0].mods' "${out}/build-41.json")" \
+    '[{"folder":"Old","id":"OldMod","name":"Old","versionFolder":"","loads":false,"error":null,"require":[],"incompatible":[],"zoneLoader":null,"maps":[]},{"folder":"Town","id":"TownMod","name":"Town 41","versionFolder":"","loads":true,"error":null,"require":["TilePack"],"incompatible":[],"zoneLoader":null,"maps":[0]}]'
+  expect_eq "$(jq -c '[.items[1:][].mods[] | [.folder, .versionFolder, .loads, .error, .maps]]' "${out}/build-41.json")" \
+    '[["Next","",true,null,[1]],["Fork",null,false,"no mod.info for this game version",[]]]'
+  expect_eq "$(jq -c '.maps[]' "${out}/build-41.json")" "$(printf '%s\n' \
+    '{"item":"7","folder":"Town","name":"Town","title":"Town TXT","cells":[[1,1,2]],"spawns":1,"zones":{}}' \
+    '{"item":"20","folder":"Next","name":"Next","title":"Next 41","cells":[[1,2,3]],"spawns":null,"zones":{}}')"
+  expect_eq "$(jq -c '[.conflicts, .providers]' "${out}/build-41.json")" '[[[0,1,1]],{"NextMod":["20"],"TownMod":["7"]}]'
+  # Titles come from Translate/EN/<map>.json from 42.20 on.
+  GAME_VERSIONS=42.19.5 bash "${repo}/ci/site.sh" "${WORK}/builds-4219" 2> /dev/null || fail "the build failed for 42.19"
+  expect_eq "$(ls "${WORK}/builds-4219" | paste -sd ' ')" "build-42.json grid-1.js index.json"
+  expect_eq "$(jq -c '[.maps[].title]' "${WORK}/builds-4219/build-42.json")" '[null,"Town 42 TXT","Next TXT",null]'
+  GAME_VERSIONS=42.20 bash "${repo}/ci/site.sh" "${WORK}/builds-4220" 2> /dev/null || fail "the build failed for 42.20"
+  expect_eq "$(jq -c '[.maps[].title]' "${WORK}/builds-4220/build-42.json")" '[null,"Town JSON","Next",null]'
+  for versions in '' 42 '42.13.0 42.21.0'; do
+    GAME_VERSIONS="${versions}" bash "${repo}/ci/site.sh" "${WORK}/builds-bad" 2> "${WORK}/builds-err" \
+      && fail "the build passed with GAME_VERSIONS '${versions}'"
+  done
+  expect_eq "$(cat "${WORK}/builds-err")" 'GAME_VERSIONS has more than one version of Build 42'
+  GAME_VERSIONS=42 bash "${repo}/ci/site.sh" "${WORK}/builds-bad" 2> "${WORK}/builds-err"
+  expect_eq "$(cat "${WORK}/builds-err")" 'GAME_VERSIONS has 42, which is not a game version like 42.21.0'
 }
 
 test_grid() {
@@ -597,7 +697,7 @@ test_grid() {
   node "${REPO}/test/grid.mjs" || fail "the grid tests failed"
 }
 
-for t in test_request test_freshness test_index_item test_work test_worker_run test_library test_discover test_site test_grid; do
+for t in test_request test_freshness test_index_item test_work test_worker_run test_library test_discover test_site test_builds test_grid; do
   ("${t}"; exit "${FAILED}") || FAILED=1
 done
 if [ "${FAILED}" = 0 ]; then echo "Tests passed"; else echo "Tests failed"; exit 1; fi
