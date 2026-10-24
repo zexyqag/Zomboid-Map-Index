@@ -14,7 +14,8 @@ expect_eq() {
 }
 
 # Steam answers from FAKE_ITEMS ({"<id>": details}); an ID it doesn't have gets result 9, and it leaves out
-# FAKE_STEAM_SKIP. GitHub lists FAKE_ISSUES, then FAKE_ISSUES_2 as the second page.
+# FAKE_STEAM_SKIP. Its Workshop query ranks FAKE_RANKED (IDs separated by spaces), 100 a page, and logs its
+# parameters. GitHub lists FAKE_ISSUES, then FAKE_ISSUES_2 as the second page.
 mkdir -p "${WORK}/bin"
 cat > "${WORK}/bin/curl" <<'EOF'
 #!/bin/bash
@@ -25,6 +26,20 @@ if [[ "${*: -1}" == https://api.github.com/* ]]; then
     *'&page=2') printf '%s\n' "${FAKE_ISSUES_2:-[]}" ;;
     *) echo '[]' ;;
   esac
+  exit 0
+fi
+if [ "${*: -1}" = https://api.steampowered.com/IPublishedFileService/QueryFiles/v1/ ]; then
+  page=1 params=()
+  for arg; do
+    [[ "${arg}" == page=* ]] && page="${arg#page=}"
+    [[ "${arg}" == *=* ]] && params+=("${arg}")
+  done
+  echo "${params[*]}" >> "${WORK}/query-calls"
+  [ -n "${FAKE_QUERY_DOWN:-}" ] && exit 22
+  [ -n "${FAKE_QUERY_BAD:-}" ] && { echo '{"response": {}}'; exit 0; }
+  read -r -a ranked <<< "${FAKE_RANKED:-}"
+  printf '%s\n' "${ranked[@]:$(((page - 1) * 100)):100}" | jq -R . | jq -s -c --argjson total "${#ranked[@]}" \
+    'map(select(length > 0)) | {response: {total: $total, publishedfiledetails: map({publishedfileid: .})}}'
   exit 0
 fi
 [ -n "${FAKE_STEAM_DOWN:-}" ] && exit 7
@@ -470,7 +485,62 @@ $(body 555 777)"
   expect_eq "$(WORKSHOP_DIR="${WORK}" bash "${clone}/worker/library.sh" < /dev/null 2>&1)" "${WORK} has no Project Zomboid items: ${WORK}/appworkshop_108600.acf is missing"
 }
 
-for t in test_request test_freshness test_index_item test_work test_worker_run test_library; do
+test_discover() {
+  TEST=discover
+  local repo="${WORK}/discover" out
+  mkdir -p "${repo}/items"
+  cp -r "${REPO}/ci" "${repo}/"
+  printf '{"format": 2, "id": "1003", "title": "Third", "timeUpdated": 1}\n' > "${repo}/items/1003.json"
+  # Ranked: 1001 to 1250. 1002 is banned, 1003 indexed, 1004 queued, 1007 not tagged Map; the Workshop doesn't
+  # have those after 1007.
+  export FAKE_RANKED FAKE_ITEMS STEAM_API_KEY=fake-key
+  FAKE_RANKED="$(seq -s ' ' 1001 1250)"
+  FAKE_ITEMS="$(jq -n -c --argjson first "$(details 1001 First 1789883053)" --argjson banned "$(details 1002 Banned 1 108600 1)" \
+    --argjson third "$(details 1003 Third 1)" --argjson fourth "$(details 1004 Fourth 1)" \
+    --argjson fifth "$(details 1005 Fifth 1789883053)" --argjson sixth "$(details 1006 Sixth 1)" \
+    --argjson mod "$(details 1007 "A Mod" 1 108600 0 "Build 42,Items")" \
+    '{"1001": $first, "1002": $banned, "1003": $third, "1004": $fourth, "1005": $fifth, "1006": $sixth, "1007": $mod}')"
+  export FAKE_OPEN='[{"number": 4, "title": "Add Fourth (1004)", "labels": [{"name": "add"}, {"name": "ready"}]},
+    {"number": 5, "title": "A question", "labels": []}]'
+  discover() {
+    rm -f "${WORK}/gh-calls" "${WORK}/sleep-calls" "${WORK}/query-calls"
+    DISCOVER_TOP="$1" DISCOVER_QUEUE="$2" bash "${repo}/ci/discover.sh"
+  }
+  created() { calls | grep '^issue | create' | sed -E 's/^issue \| create \| --title \| ([^|]*) \|.*/\1/' | paste -sd ',' -; }
+
+  # One queued, two more wanted: the two most subscribed it can take, of the 150 most subscribed.
+  out="$(discover 150 3)" || fail "the check failed"
+  expect_eq "${out}" "Queued 2 maps."
+  expect_eq "$(calls | grep '^issue | create')" "issue | create | --title | Add First (1001) | --label | add,ready | --body | First is one of the 150 most subscribed maps on the Workshop, about 115 MB, updated on $(date -u -d @1789883053 +%Y-%m-%d). https://steamcommunity.com/sharedfiles/filedetails/?id=1001
+issue | create | --title | Add Fifth (1005) | --label | add,ready | --body | Fifth is one of the 150 most subscribed maps on the Workshop, about 115 MB, updated on $(date -u -d @1789883053 +%Y-%m-%d). https://steamcommunity.com/sharedfiles/filedetails/?id=1005"
+  expect_eq "$(head -n 1 "${WORK}/gh-calls")" "issue | list | --state | open | --limit | 1000 | --json | number,title,labels"
+  expect_eq "$(cat "${WORK}/sleep-calls")" "1"
+  expect_eq "$(cat "${WORK}/query-calls")" "key=fake-key query_type=9 appid=108600 requiredtags[0]=Map numperpage=100 page=1 ids_only=true
+key=fake-key query_type=9 appid=108600 requiredtags[0]=Map numperpage=100 page=2 ids_only=true"
+  # Only the most subscribed count, and not more than it wants.
+  discover 5 10 > /dev/null || fail "the check failed with a short top"
+  expect_eq "$(created)" "Add First (1001),Add Fifth (1005)"
+  expect_eq "$(wc -l < "${WORK}/query-calls")" 1
+  discover 500 2 > /dev/null || fail "the check failed with one wanted"
+  expect_eq "$(created)" "Add First (1001)"
+  # Fewer ranked than the top: no more pages.
+  FAKE_RANKED="$(seq -s ' ' 1001 1050)" discover 500 10 > /dev/null || fail "the check failed with few ranked"
+  expect_eq "$(wc -l < "${WORK}/query-calls")" 1
+  expect_eq "$(created)" "Add First (1001),Add Fifth (1005),Add Sixth (1006)"
+  # A full queue asks Steam nothing.
+  out="$(discover 150 1)" || fail "the check failed with a full queue"
+  expect_eq "${out}" "The queue is full: 1 issues are ready for the worker."
+  [ -e "${WORK}/query-calls" ] && fail "it queried Steam with a full queue"
+  # Without a key, or when Steam fails, it opens nothing.
+  STEAM_API_KEY='' discover 150 3 > /dev/null && fail "it passed without a key"
+  expect_eq "$(calls)" ""
+  for down in FAKE_QUERY_DOWN FAKE_QUERY_BAD FAKE_STEAM_DOWN; do
+    (export "${down}=1"; discover 150 3 > /dev/null) && fail "it passed with ${down}"
+    expect_eq "$(created)" ""
+  done
+}
+
+for t in test_request test_freshness test_index_item test_work test_worker_run test_library test_discover; do
   ("${t}"; exit "${FAILED}") || FAILED=1
 done
 if [ "${FAILED}" = 0 ]; then echo "Tests passed"; else echo "Tests failed"; exit 1; fi

@@ -10,9 +10,13 @@ Open an issue with the **Add a map** form and give the map's Workshop link or ID
 
 Once a day a check asks the Workshop which maps in the index changed or were removed since they were indexed, and queues each in an issue of its own.
 
+## Popular maps
+
+Once a day a check also queues the most subscribed maps on the Workshop that the index doesn't have yet, a few at a time.
+
 ## How it works
 
-The checks run on GitHub Actions and only read the Workshop's public details of each item; nothing in an issue is ever run. A worker in this repository, run by the maintainer, downloads the queued maps, reads their files and adds them to `items/`, one file per Workshop item.
+The checks run on GitHub Actions and only read public information from the Workshop; nothing in an issue is ever run. A worker in this repository, run by the maintainer, downloads the queued maps, reads their files and adds them to `items/`, one file per Workshop item.
 
 ## Data
 

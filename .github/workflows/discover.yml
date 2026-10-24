@@ -1,0 +1,30 @@
+name: Discover
+
+on:
+  schedule:
+    - cron: '13 6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: discover
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Queue popular maps
+        run: bash ci/discover.sh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          STEAM_API_KEY: ${{ secrets.STEAM_API_KEY }}
+          DISCOVER_TOP: ${{ vars.DISCOVER_TOP || 500 }}
+          DISCOVER_QUEUE: ${{ vars.DISCOVER_QUEUE || 50 }}
