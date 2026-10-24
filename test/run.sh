@@ -231,26 +231,36 @@ test_freshness() {
   bash "${repo}/ci/freshness.sh" || fail "the check failed without items"
   expect_eq "$(calls)" ""
 
-  for item in '1 Current 100 2' '2 Changed 100 2' '3 Removed 100 2' '4 Banned 100 2' '5 Queued 100 2' '6 Elsewhere 100 2' '7 Older 100 1'; do
-    read -r id title updated format <<< "${item}"
-    printf '{"format": %s, "id": "%s", "title": "%s", "timeUpdated": %s, "mods": []}\n' "${format}" "${id}" "${title}" "${updated}" > "${repo}/items/${id}.json"
+  # Items with a map, and items without map folders: 8 and 9 changed on the Workshop since a version the index has
+  # from 89 and 90 days ago, 10 since one from a day ago.
+  local now day=86400 map='[{"folder": "M", "roots": [{"path": "", "maps": [{"name": "M"}]}]}]'
+  now="$(date +%s)"
+  for item in "1 Current 100 2 ${map}" "2 Changed 100 2 ${map}" "3 Removed 100 2 []" "4 Banned 100 2 []" "5 Queued 100 2 []" \
+    "6 Elsewhere 100 2 []" "7 Older 100 1 ${map}" "8 Tiles $((now - 89 * day)) 2 []" "9 Tools $((now - 90 * day - 60)) 2 []" \
+    "10 Fresh $((now - day)) 2 ${map}"; do
+    read -r id title updated format mods <<< "${item}"
+    printf '{"format": %s, "id": "%s", "title": "%s", "timeUpdated": %s, "mods": %s}\n' "${format}" "${id}" "${title}" "${updated}" "${mods}" \
+      > "${repo}/items/${id}.json"
   done
   export FAKE_ITEMS
   FAKE_ITEMS="$(jq -n -c --argjson current "$(details 1 Current 100)" --argjson changed "$(details 2 "Changed Again" 200)" \
     --argjson banned "$(details 4 Banned 100 108600 1)" --argjson queued "$(details 5 Queued 300)" --argjson elsewhere "$(details 6 Elsewhere 100 999)" \
-    --argjson older "$(details 7 "Older Format" 100)" \
-    '{"1": $current, "2": $changed, "4": $banned, "5": $queued, "6": $elsewhere, "7": $older}')"
+    --argjson older "$(details 7 "Older Format" 100)" --argjson tiles "$(details 8 Tiles "${now}")" --argjson tools "$(details 9 Tools "${now}")" \
+    --argjson fresh "$(details 10 Fresh "${now}")" \
+    '{"1": $current, "2": $changed, "4": $banned, "5": $queued, "6": $elsewhere, "7": $older, "8": $tiles, "9": $tools, "10": $fresh}')"
   rm -f "${WORK}/gh-calls" "${WORK}/sleep-calls"
   FAKE_OPEN='[{"number": 3, "title": "Update Queued (5)"}]' bash "${repo}/ci/freshness.sh" || fail "the check failed"
   expect_eq "$(calls)" "${LABELS}
 issue | list | --state | open | --limit | 1000 | --json | number,title
+issue | create | --title | Update Fresh (10) | --label | update,ready | --body | Fresh changed on the Workshop on $(date -u -d "@${now}" +%Y-%m-%d); the index has it from $(date -u -d "@$((now - day))" +%Y-%m-%d). https://steamcommunity.com/sharedfiles/filedetails/?id=10
 issue | create | --title | Update Changed Again (2) | --label | update,ready | --body | Changed Again changed on the Workshop on $(date -u -d @200 +%Y-%m-%d); the index has it from $(date -u -d @100 +%Y-%m-%d). https://steamcommunity.com/sharedfiles/filedetails/?id=2
 issue | create | --title | Gone Removed (3) | --label | gone,ready | --body | The Workshop no longer has Removed as a Project Zomboid item (removed). https://steamcommunity.com/sharedfiles/filedetails/?id=3
 issue | create | --title | Gone Banned (4) | --label | gone,ready | --body | The Workshop no longer has Banned as a Project Zomboid item (banned). https://steamcommunity.com/sharedfiles/filedetails/?id=4
 issue | create | --title | Gone Elsewhere (6) | --label | gone,ready | --body | The Workshop no longer has Elsewhere as a Project Zomboid item (not for Project Zomboid). https://steamcommunity.com/sharedfiles/filedetails/?id=6
-issue | create | --title | Update Older Format (7) | --label | update,ready | --body | The index has Older Format in an older format, so the worker reads it again. https://steamcommunity.com/sharedfiles/filedetails/?id=7"
+issue | create | --title | Update Older Format (7) | --label | update,ready | --body | The index has Older Format in an older format, so the worker reads it again. https://steamcommunity.com/sharedfiles/filedetails/?id=7
+issue | create | --title | Update Tools (9) | --label | update,ready | --body | Tools changed on the Workshop on $(date -u -d "@${now}" +%Y-%m-%d); the index has it from $(date -u -d "@$((now - 90 * day - 60))" +%Y-%m-%d). https://steamcommunity.com/sharedfiles/filedetails/?id=9"
   # A second between new issues.
-  expect_eq "$(paste -sd ' ' "${WORK}/sleep-calls")" "1 1 1 1"
+  expect_eq "$(paste -sd ' ' "${WORK}/sleep-calls")" "1 1 1 1 1 1"
 
   # Without Steam, or with an item left out of its answer, it fails before touching any issue.
   rm -f "${WORK}/gh-calls"

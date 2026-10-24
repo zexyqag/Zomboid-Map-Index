@@ -8,7 +8,7 @@ Open an issue with the **Add a map** form and give the map's Workshop link or ID
 
 ## Updates
 
-Once a day a check asks the Workshop which maps in the index changed or were removed since they were indexed, and queues each in an issue of its own.
+Once a day a check asks the Workshop which maps in the index changed or were removed since they were indexed, and queues each in an issue of its own. An item without map folders, such as a tile pack, is read again at most every 90 days; ask for it with the form to have it read sooner.
 
 ## Popular maps
 
