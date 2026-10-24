@@ -14,8 +14,9 @@ expect_eq() {
 }
 
 # Steam answers from FAKE_ITEMS ({"<id>": details}); an ID it doesn't have gets result 9, and it leaves out
-# FAKE_STEAM_SKIP. Its keyed details answer the same, log their parameters and fail with FAKE_FULL_DOWN. Its Workshop query ranks FAKE_RANKED (IDs separated by spaces), 100 a page, and logs its
-# parameters. GitHub lists FAKE_ISSUES, then FAKE_ISSUES_2 as the second page.
+# FAKE_STEAM_SKIP. Its keyed details answer the same, log their parameters and fail with FAKE_FULL_DOWN. Its Workshop
+# query ranks FAKE_RANKED (IDs separated by spaces), 100 a page with a cursor to the next (none with FAKE_NO_CURSOR),
+# and logs its parameters. GitHub lists FAKE_ISSUES, then FAKE_ISSUES_2 as the second page.
 mkdir -p "${WORK}/bin"
 cat > "${WORK}/bin/curl" <<'EOF'
 #!/bin/bash
@@ -29,17 +30,18 @@ if [[ "${*: -1}" == https://api.github.com/* ]]; then
   exit 0
 fi
 if [ "${*: -1}" = https://api.steampowered.com/IPublishedFileService/QueryFiles/v1/ ]; then
-  page=1 params=()
+  from=0 params=()
   for arg; do
-    [[ "${arg}" == page=* ]] && page="${arg#page=}"
+    [[ "${arg}" == cursor=after* ]] && from="${arg#cursor=after}"
     [[ "${arg}" == *=* ]] && params+=("${arg}")
   done
   echo "${params[*]}" >> "${WORK}/query-calls"
   [ -n "${FAKE_QUERY_DOWN:-}" ] && exit 22
   [ -n "${FAKE_QUERY_BAD:-}" ] && { echo '{"response": {}}'; exit 0; }
   read -r -a ranked <<< "${FAKE_RANKED:-}"
-  printf '%s\n' "${ranked[@]:$(((page - 1) * 100)):100}" | jq -R . | jq -s -c --argjson total "${#ranked[@]}" \
-    'map(select(length > 0)) | {response: {total: $total, publishedfiledetails: map({publishedfileid: .})}}'
+  printf '%s\n' "${ranked[@]:from:100}" | jq -R . | jq -s -c --argjson total "${#ranked[@]}" --arg next "after$((from + 100))" \
+    --arg cursor "${FAKE_NO_CURSOR:-yes}" 'map(select(length > 0)) | {response: ({total: $total, publishedfiledetails: map({publishedfileid: .})}
+      + if $cursor == "yes" then {next_cursor: $next} else {} end)}'
   exit 0
 fi
 [ -n "${FAKE_STEAM_DOWN:-}" ] && exit 7
@@ -56,12 +58,16 @@ done
 printf '%s\n' "${ids[@]}" | jq -R . | jq -s -c --argjson items "${FAKE_ITEMS:-{\}}" \
   '{response: {publishedfiledetails: map(. as $id | $items[$id] // {publishedfileid: $id, result: 9})}}'
 EOF
-# gh logs each call on a line, its arguments joined by " | ", lists FAKE_OPEN as the open issues and numbers the
-# issues it creates from 20.
+# gh logs each call on a line, its arguments joined by " | " (a --jq filter as "..."), answers the API with FAKE_OPEN
+# as the open issues through the filter and numbers the issues it creates from 20.
 cat > "${WORK}/bin/gh" <<'EOF'
 #!/bin/bash
-(IFS='|'; printf '%s\n' "$*" | sed 's/|/ | /g') >> "${WORK}/gh-calls"
-[ "$1 $2" = "issue list" ] && printf '%s\n' "${FAKE_OPEN:-[]}"
+args=("$@") filter=
+for i in "${!args[@]}"; do
+  [ "${args[i]}" = --jq ] && filter="${args[i + 1]}" && args[i + 1]=...
+done
+(IFS='|'; printf '%s\n' "${args[*]}" | sed 's/|/ | /g') >> "${WORK}/gh-calls"
+[ "$1" = api ] && jq -r "${filter}" <<< "${FAKE_OPEN:-[]}"
 if [ "$1 $2" = "issue create" ]; then
   echo "https://github.com/owner/index/issues/$((20 + $(grep -c '^issue | create' "${WORK}/gh-calls") - 1))"
 fi
@@ -154,6 +160,7 @@ request() {
   GITHUB_EVENT_PATH="${WORK}/event.json" bash "${WORK}/request/ci/request.sh"
 }
 calls() { cat "${WORK}/gh-calls" 2> /dev/null; }
+LIST='api | --paginate | repos/{owner}/{repo}/issues?state=open&per_page=100 | --jq | ...'
 form() { printf '### Workshop item\n\n%s\n' "$1"; }
 
 test_request() {
@@ -176,7 +183,7 @@ test_request() {
   for field in 'https://steamcommunity.com/sharedfiles/filedetails/?id=3484263516&searchtext=raven' '  3484263516 '; do
     request "$(form "${field}" | sed 's/$/\r/')"
     expect_eq "$(calls)" "${LABELS}
-issue | list | --state | open | --limit | 1000 | --json | number,title
+${LIST}
 issue | edit | 9 | --title | Add Raven Creek B42 (3484263516) | --add-label | add,ready
 issue | comment | 9 | --body | ${queued}"
   done
@@ -207,7 +214,7 @@ issue | close | 9 | --reason | not planned"
   # An edit that changes nothing.
   request "$(form 3484263516)" 9 open 'Add Raven Creek B42 (3484263516)' add,ready
   expect_eq "$(calls)" "${LABELS}
-issue | list | --state | open | --limit | 1000 | --json | number,title"
+${LIST}"
 
   # In the index: current, or older than the Workshop's.
   printf '{"format": 2, "id": "3484263516", "title": "Raven Creek B42", "timeUpdated": 1789883053}\n' > "${WORK}/request/items/3484263516.json"
@@ -277,7 +284,7 @@ test_freshness() {
   rm -f "${WORK}/gh-calls" "${WORK}/sleep-calls"
   FAKE_OPEN='[{"number": 3, "title": "Update Queued (5)"}]' bash "${repo}/ci/freshness.sh" || fail "the check failed"
   expect_eq "$(calls)" "${LABELS}
-issue | list | --state | open | --limit | 1000 | --json | number,title
+${LIST}
 issue | create | --title | Update Fresh (10) | --label | update,ready | --body | Fresh changed on the Workshop on $(date -u -d "@${now}" +%Y-%m-%d); the index has it from $(date -u -d "@$((now - day))" +%Y-%m-%d). https://steamcommunity.com/sharedfiles/filedetails/?id=10
 issue | create | --title | Update Changed Again (2) | --label | update,ready | --body | Changed Again changed on the Workshop on $(date -u -d @200 +%Y-%m-%d); the index has it from $(date -u -d @100 +%Y-%m-%d). https://steamcommunity.com/sharedfiles/filedetails/?id=2
 issue | create | --title | Gone Removed (3) | --label | gone,ready | --body | The Workshop no longer has Removed as a Project Zomboid item (removed). https://steamcommunity.com/sharedfiles/filedetails/?id=3
@@ -535,6 +542,22 @@ EOF
   expect_eq "$(tail -n 1 "${WORK}/serve-err")" 'This round failed; the next one is in 30m'
   expect_eq "$(cat "${WORK}/sleep-calls")" 30m
   [ -e "${WORK}/work-calls" ] && fail "serve.sh worked without a clone"
+  # Each result is pushed as it comes, before the round ends, and a round that fails keeps what it pushed.
+  cat > "${worker}/work.sh" <<'EOF'
+#!/bin/bash
+printf '{"id": "555"}\n' > "${ITEMS_DIR}/555.json"
+printf '%s\n' "3	add	555	Early	done"
+for _ in $(seq 50); do
+  git --git-dir="${FAKE_REMOTE}" log --format=%s main | grep -qx 'data: add Early (555)' && { echo pushed >> "${WORK}/work-calls"; exit 1; }
+  command -p sleep 0.1
+done
+echo waited >> "${WORK}/work-calls"
+exit 1
+EOF
+  FAKE_REMOTE="${remote}" REMOTE="${remote}" serve
+  expect_eq "$(cat "${WORK}/work-calls")" pushed
+  expect_eq "$(cat "${WORK}/serve-out")" "$(printf '%s\n' 'Working through the queued requests' '#3 Early: add')"
+  expect_eq "$(tail -n 1 "${WORK}/serve-err")" 'This round failed; the next one is in 6h'
   # The remote is the repository on GitHub by default.
   mkdir -p "${WORK}/serve-bin"
   printf '#!/bin/bash\nprintf "%%s\\n" "$*" >> "${WORK}/ssh-calls"\nexit 1\n' > "${WORK}/serve-bin/ssh"
@@ -658,13 +681,13 @@ test_library() {
 alpha Map: https://github.com/owner/index/issues/20
 Gamma Map: https://github.com/owner/index/issues/21
 Once the request check queues them, run: WORKSHOP_DIR=\"${library}\" ./worker/run.sh"
-  expect_eq "$(calls)" "issue | list | --state | open | --limit | 1000 | --json | number,title
+  expect_eq "$(calls)" "${LIST}
 $(body 555 777)"
   expect_eq "$(cat "${WORK}/sleep-calls")" "1"
   # Every one, once, in the list's order.
   for answer in all '3,1-2 2' ' 03 01-02 '; do
     library "${answer}" > /dev/null || fail "the pick '${answer}' failed"
-    expect_eq "$(calls | grep -v '^issue | list')" "$(body 555 444 777)"
+    expect_eq "$(calls | grep -v '^api | ')" "$(body 555 444 777)"
   done
   # Nothing picked, or a pick that isn't in the list, opens nothing.
   out="$(library '')" || fail "picking nothing failed"
@@ -699,9 +722,9 @@ test_discover() {
   cp -r "${REPO}/ci" "${repo}/"
   printf '{"format": 2, "id": "1003", "title": "Third", "timeUpdated": 1}\n' > "${repo}/items/1003.json"
   printf '{"format": 2, "id": "1101", "title": "Tiles", "timeUpdated": 1}\n' > "${repo}/items/1101.json"
-  # Ranked: 1001 to 1250. 1002 is banned, 1003 indexed, 1004 queued; the Workshop doesn't have those after 1006. The
-  # indexed Third requires the tile packs 1102 (not tagged Map) and 1101 (indexed) and the queued 1004, and Tiles 1102
-  # too.
+  # Ranked: 1001 to 1250. 1002 is banned, 1003 indexed, 1004 queued (a pull request doesn't queue 1001); the Workshop
+  # doesn't have those after 1006. The indexed Third requires the tile packs 1102 (not tagged Map) and 1101 (indexed)
+  # and the queued 1004, and Tiles 1102 too.
   export FAKE_RANKED FAKE_ITEMS STEAM_API_KEY=fake-key
   FAKE_RANKED="$(seq -s ' ' 1001 1250)"
   FAKE_ITEMS="$(jq -n -c --argjson first "$(details 1001 First 1789883053)" --argjson banned "$(details 1002 Banned 1 108600 1)" \
@@ -711,34 +734,58 @@ test_discover() {
     '{"1001": $first, "1002": $banned, "1003": ($third + {children: [{publishedfileid: "1102"}, {publishedfileid: "1101"}, {publishedfileid: "1004"}]}),
       "1004": $fourth, "1005": $fifth, "1006": $sixth, "1101": ($tiles + {children: [{publishedfileid: "1102"}]}), "1102": $more}')"
   export FAKE_OPEN='[{"number": 4, "title": "Add Fourth (1004)", "labels": [{"name": "add"}, {"name": "ready"}]},
-    {"number": 5, "title": "A question", "labels": []}]'
+    {"number": 5, "title": "A question", "labels": [{"name": "unready"}]},
+    {"number": 6, "title": "Add First (1001)", "pull_request": {}, "labels": [{"name": "ready"}]}]'
   discover() {
     rm -f "${WORK}/gh-calls" "${WORK}/sleep-calls" "${WORK}/query-calls" "${WORK}/full-calls"
     DISCOVER_TOP="$1" DISCOVER_QUEUE="$2" bash "${repo}/ci/discover.sh"
   }
   created() { calls | grep '^issue | create' | sed -E 's/^issue \| create \| --title \| ([^|]*) \|.*/\1/' | paste -sd ',' -; }
 
-  # One queued, two more wanted: first what the index's items require, then the most subscribed it can take, of the
-  # 150 most subscribed.
+  query() { sed -E 's/.* cursor=([^ ]*) .*/\1/' "${WORK}/query-calls" 2> /dev/null | paste -sd ' ' -; }
+
+  # One queued, two more wanted: first what the index's items require, then the most subscribed it can take, reading
+  # no more of the ranking than it takes.
   out="$(discover 150 3)" || fail "the check failed"
   expect_eq "${out}" "Queued 2 items."
   expect_eq "$(calls | grep '^issue | create')" "issue | create | --title | Add More Tiles (1102) | --label | add,ready | --body | More Tiles is required on the Workshop by Third, Tiles, about 115 MB, updated on $(date -u -d @1 +%Y-%m-%d). https://steamcommunity.com/sharedfiles/filedetails/?id=1102
-issue | create | --title | Add First (1001) | --label | add,ready | --body | First is one of the 150 most subscribed maps on the Workshop, about 115 MB, updated on $(date -u -d @1789883053 +%Y-%m-%d). https://steamcommunity.com/sharedfiles/filedetails/?id=1001"
+issue | create | --title | Add First (1001) | --label | add,ready | --body | First is number 1 of the most subscribed maps on the Workshop, about 115 MB, updated on $(date -u -d @1789883053 +%Y-%m-%d). https://steamcommunity.com/sharedfiles/filedetails/?id=1001"
   expect_eq "$(cat "${WORK}/full-calls")" 'key=fake-key includechildren=true includevotes=true publishedfileids[0]=1003 publishedfileids[1]=1101'
-  expect_eq "$(head -n 1 "${WORK}/gh-calls")" "issue | list | --state | open | --limit | 1000 | --json | number,title,labels"
-  expect_eq "$(cat "${WORK}/sleep-calls")" "1"
-  expect_eq "$(cat "${WORK}/query-calls")" "key=fake-key query_type=9 appid=108600 requiredtags[0]=Map numperpage=100 page=1 ids_only=true
-key=fake-key query_type=9 appid=108600 requiredtags[0]=Map numperpage=100 page=2 ids_only=true"
-  # Only the most subscribed count, and not more than it wants.
-  discover 5 10 > /dev/null || fail "the check failed with a short top"
+  expect_eq "$(head -n 1 "${WORK}/gh-calls")" "${LIST}"
+  expect_eq "$(cat "${WORK}/sleep-calls")" "8"
+  expect_eq "$(cat "${WORK}/query-calls")" "key=fake-key query_type=9 appid=108600 requiredtags[0]=Map numperpage=100 cursor=* ids_only=true"
+  # More wanted than the first page has: the next pages by their cursors, until a page isn't full.
+  out="$(discover 500 10)" || fail "the check failed with more wanted"
+  expect_eq "${out}" "Queued 4 of the 9 items wanted: the index has or queues the rest of the 250 most subscribed maps."
+  expect_eq "$(created)" "Add More Tiles (1102),Add First (1001),Add Fifth (1005),Add Sixth (1006)"
+  expect_eq "$(calls | grep -c 'Sixth is number 6 of')" 1
+  expect_eq "$(query)" "* after100 after200"
+  # Only the most subscribed count.
+  out="$(discover 5 10)" || fail "the check failed with a short top"
+  expect_eq "${out}" "Queued 3 of the 9 items wanted: the index has or queues the rest of the 5 most subscribed maps."
   expect_eq "$(created)" "Add More Tiles (1102),Add First (1001),Add Fifth (1005)"
-  expect_eq "$(wc -l < "${WORK}/query-calls")" 1
+  expect_eq "$(query)" "*"
+  # What the index's items require can be all it wants.
   discover 500 2 > /dev/null || fail "the check failed with one wanted"
   expect_eq "$(created)" "Add More Tiles (1102)"
-  # Fewer ranked than the top: no more pages.
-  FAKE_RANKED="$(seq -s ' ' 1001 1050)" discover 500 10 > /dev/null || fail "the check failed with few ranked"
-  expect_eq "$(wc -l < "${WORK}/query-calls")" 1
-  expect_eq "$(created)" "Add More Tiles (1102),Add First (1001),Add Fifth (1005),Add Sixth (1006)"
+  [ -e "${WORK}/query-calls" ] && fail "it read the ranking with what it wanted queued"
+  # The ranking ends where Steam gives no cursor, or no IDs.
+  FAKE_NO_CURSOR=no FAKE_RANKED="$(seq -s ' ' 1001 1200)" discover 500 10 > /dev/null || fail "the check failed without a cursor"
+  expect_eq "$(query)" "*"
+  FAKE_RANKED="$(seq -s ' ' 1001 1200)" discover 500 10 > /dev/null || fail "the check failed with whole pages"
+  expect_eq "$(query)" "* after100 after200"
+  # So many issues, however full the queue.
+  out="$(DISCOVER_COUNT=2 discover 150 1)" || fail "the check failed with a count"
+  expect_eq "${out}" "Queued 2 items."
+  expect_eq "$(created)" "Add More Tiles (1102),Add First (1001)"
+  for setting in DISCOVER_COUNT DISCOVER_TOP DISCOVER_QUEUE; do
+    for bad in 0 -1 1x '1+1'; do
+      rm -f "${WORK}/gh-calls"
+      (export "${setting}=${bad}"; DISCOVER_TOP="${DISCOVER_TOP:-150}" DISCOVER_QUEUE="${DISCOVER_QUEUE:-3}" \
+        bash "${repo}/ci/discover.sh" > /dev/null) && fail "it passed with ${setting} ${bad}"
+      expect_eq "$(calls)" ""
+    done
+  done
   # Required items queued already, or ranked too, come once.
   FAKE_OPEN='[{"number": 4, "title": "Add Fourth (1004)", "labels": [{"name": "add"}, {"name": "ready"}]},
     {"number": 6, "title": "Add More Tiles (1102)", "labels": [{"name": "add"}, {"name": "ready"}]}]' \
@@ -754,9 +801,14 @@ key=fake-key query_type=9 appid=108600 requiredtags[0]=Map numperpage=100 page=2
   # Without a key, or when Steam fails, it opens nothing.
   STEAM_API_KEY='' discover 150 3 > /dev/null && fail "it passed without a key"
   expect_eq "$(calls)" ""
-  for down in FAKE_QUERY_DOWN FAKE_QUERY_BAD FAKE_STEAM_DOWN FAKE_FULL_DOWN; do
+  for down in FAKE_STEAM_DOWN FAKE_FULL_DOWN; do
     (export "${down}=1"; discover 150 3 > /dev/null) && fail "it passed with ${down}"
     expect_eq "$(created)" ""
+  done
+  # When the ranking fails, what the index's items require is queued.
+  for down in FAKE_QUERY_DOWN FAKE_QUERY_BAD; do
+    (export "${down}=1"; discover 150 3 > /dev/null) && fail "it passed with ${down}"
+    expect_eq "$(created)" "Add More Tiles (1102)"
   done
 }
 

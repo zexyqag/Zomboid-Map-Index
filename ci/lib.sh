@@ -122,8 +122,9 @@ indexed_current() {
 }
 
 open_issues() {
-  # Prints "<number>\t<title>" of each open issue.
-  gh issue list --state open --limit 1000 --json number,title | jq -r '.[] | "\(.number)\t\(.title)"'
+  # Prints "<number>\t<title>\t<labels, joined by commas>" of every open issue.
+  gh api --paginate 'repos/{owner}/{repo}/issues?state=open&per_page=100' \
+    --jq '.[] | select(has("pull_request") | not) | "\(.number)\t\(.title)\t\([.labels[]?.name] | join(","))"'
 }
 
 queued_in() {

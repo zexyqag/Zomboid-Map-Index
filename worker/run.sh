@@ -1,7 +1,7 @@
 #!/bin/bash
 # Works through the requests the checks queued: builds the worker image, runs it on the open issues labelled ready,
-# commits each new, changed or removed index entry with "Closes #<issue>", and pushes. Run it in a clone of this
-# repository on a machine with Docker; downloads stay in the Docker volume zomboid-map-index-cache, or with
+# and commits and pushes each new, changed or removed index entry with "Closes #<issue>" as it comes. Run it in a clone
+# of this repository on a machine with Docker; downloads stay in the Docker volume zomboid-map-index-cache, or with
 # --drop-downloads are deleted once they are read. WORKSHOP_DIR can name a Steam library's steamapps/workshop folder,
 # whose items as new as the Workshop's aren't downloaded.
 set -euo pipefail
@@ -22,5 +22,4 @@ repo="$(git remote get-url origin | sed -E 's#^(git@github\.com:|https://github\
 docker build --quiet --file worker/Dockerfile --tag zomboid-map-index-worker . > /dev/null
 args=(--rm --volume zomboid-map-index-cache:/cache --volume "${PWD}/items:/items" --env "REPO=${repo}" --env "DROP_DOWNLOADS=${drop}")
 [ -z "${WORKSHOP_DIR:-}" ] || args+=(--volume "${WORKSHOP_DIR}:/workshop:ro")
-plan="$(docker run "${args[@]}" zomboid-map-index-worker)"
-bash worker/commit.sh <<< "${plan}"
+docker run "${args[@]}" zomboid-map-index-worker | bash worker/commit.sh

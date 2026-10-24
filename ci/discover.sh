@@ -1,8 +1,8 @@
 #!/bin/bash
-# Queues what the index doesn't have and no open issue queues, until DISCOVER_QUEUE issues labelled ready are open:
-# first the items that the items in the index require on the Workshop, such as tile packs, then the most subscribed
-# maps of the Workshop, most subscribed first, of the DISCOVER_TOP most subscribed items tagged Map. Steam tells both
-# for a Web API key in STEAM_API_KEY.
+# Queues what the index doesn't have and no open issue queues: first the items that the items in the index require on
+# the Workshop, such as tile packs, then the most subscribed maps of the Workshop, most subscribed first, of the
+# DISCOVER_TOP most subscribed items tagged Map. It opens DISCOVER_COUNT issues, or without it as many as it takes for
+# DISCOVER_QUEUE issues labelled ready to be open. Steam tells both for a Web API key in STEAM_API_KEY.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 # shellcheck source=ci/lib.sh
@@ -16,23 +16,26 @@ if [ -z "${STEAM_API_KEY:-}" ]; then
   echo "::error::STEAM_API_KEY is empty: add a Steam Web API key as the repository secret STEAM_API_KEY"
   exit 1
 fi
+for setting in DISCOVER_TOP DISCOVER_QUEUE DISCOVER_COUNT; do
+  if [ -n "${!setting:-}" ] && ! [[ "${!setting}" =~ ^[1-9][0-9]*$ ]]; then
+    echo "::error::${setting} is '${!setting}', not a whole number above 0"
+    exit 1
+  fi
+done
 top="${DISCOVER_TOP:?}"
 queue="${DISCOVER_QUEUE:?}"
 
-issues="$(gh issue list --state open --limit 1000 --json number,title,labels)"
-wanted=$((queue - $(jq '[.[] | select(any(.labels[]; .name == "ready"))] | length' <<< "${issues}")))
-if [ "${wanted}" -le 0 ]; then
-  echo "The queue is full: $((queue - wanted)) issues are ready for the worker."
-  exit 0
+open="$(open_issues)"
+if [ -n "${DISCOVER_COUNT:-}" ]; then
+  wanted="${DISCOVER_COUNT}"
+else
+  ready="$(cut -f 3 <<< "${open}" | grep -c -E '(^|,)ready(,|$)' || true)"
+  wanted=$((queue - ready))
+  if [ "${wanted}" -le 0 ]; then
+    echo "The queue is full: ${ready} issues are ready for the worker."
+    exit 0
+  fi
 fi
-open="$(jq -r '.[] | "\(.number)\t\(.title)"' <<< "${issues}")"
-
-missing() {
-  # stdin = workshop IDs. Prints those the index doesn't have and no open issue queues, each once.
-  awk '!seen[$0]++' | while IFS= read -r id; do
-    [ -f "items/${id}.json" ] || [ -n "$(queued_in "${id}" <<< "${open}")" ] || printf '%s\n' "${id}"
-  done
-}
 
 # What the index's items require on the Workshop, as "<item>\t<required item>", and per required item the titles of
 # those that require it.
@@ -47,45 +50,72 @@ while IFS=$'\t' read -r item needed; do
   required_by[${needed}]="${required_by[${needed}]:+${required_by[${needed}]}, }${title}"
 done <<< "${required}"
 
-ranked=()
-for ((page = 1; (page - 1) * 100 < top; page++)); do
-  if ! response="$(curl -fsS --max-time 30 -G --data-urlencode "key=${STEAM_API_KEY}" \
-    --data-urlencode "query_type=${BY_SUBSCRIPTIONS}" --data-urlencode "appid=${WORKSHOP_APP}" \
-    --data-urlencode "requiredtags[0]=Map" --data-urlencode "numperpage=100" --data-urlencode "page=${page}" \
-    --data-urlencode "ids_only=true" "${STEAM_QUERY}")" \
-    || ! jq -e '.response | has("publishedfiledetails") or .total == 0' <<< "${response}" > /dev/null 2>&1; then
-    echo "::error::Steam's Workshop query failed on page ${page}"
+declare -A seen=() rank=()
+opened=0
+offer() {
+  # Arguments: workshop IDs. Opens an issue for each that the index doesn't have, no open issue queues, no earlier
+  # call offered and the index can have, until it has opened what it wants.
+  local id item title size updated why details
+  local -a fresh=()
+  for id; do
+    [ -z "${seen[${id}]:-}" ] || continue
+    seen[${id}]=1
+    [ -f "items/${id}.json" ] || [ -n "$(queued_in "${id}" <<< "${open}")" ] || fresh+=("${id}")
+  done
+  [ "${#fresh[@]}" -gt 0 ] || return 0
+  if ! details="$(printf '%s\n' "${fresh[@]}" | steam_details)"; then
+    echo "::error::Steam's Workshop details could not be read"
     exit 1
   fi
-  mapfile -t -O "${#ranked[@]}" ranked < <(jq -r '.response.publishedfiledetails[]?.publishedfileid' <<< "${response}")
-  [ "$(jq '.response.publishedfiledetails // [] | length' <<< "${response}")" -eq 100 ] || break
-done
-
-mapfile -t candidates < <({ cut -f 2 <<< "${required}"; printf '%s\n' "${ranked[@]:0:top}"; } | grep . | missing)
-[ "${#candidates[@]}" -gt 0 ] || exit 0
-if ! details="$(printf '%s\n' "${candidates[@]}" | steam_details)"; then
-  echo "::error::Steam's Workshop details could not be read"
-  exit 1
-fi
+  for id in "${fresh[@]}"; do
+    [ "${opened}" -lt "${wanted}" ] || return 0
+    item="$(jq -c --arg id "${id}" 'select(.publishedfileid == $id)' <<< "${details}")"
+    [ -z "$(item_problem <<< "${item}")" ] || continue
+    title="$(jq -r '.title' <<< "${item}")"
+    size="$(jq -r '(.file_size | tonumber) / 1048576 | ceil' <<< "${item}")"
+    updated="$(jq -r '.time_updated' <<< "${item}")"
+    # GitHub stops accounts that open more than about 500 issues an hour.
+    [ "${opened}" = 0 ] || sleep 8
+    if [ -n "${required_by[${id}]:-}" ]; then
+      why="${title} is required on the Workshop by ${required_by[${id}]}"
+    else
+      why="${title} is number ${rank[${id}]} of the most subscribed maps on the Workshop"
+    fi
+    gh issue create --title "Add ${title} (${id})" --label add,ready \
+      --body "${why}, about ${size} MB, updated on $(utc_date "${updated}"). $(workshop_link "${id}")" > /dev/null
+    opened=$((opened + 1))
+  done
+}
 
 ensure_labels
-opened=0
-for id in "${candidates[@]}"; do
-  [ "${opened}" -lt "${wanted}" ] || break
-  item="$(jq -c --arg id "${id}" 'select(.publishedfileid == $id)' <<< "${details}")"
-  [ -z "$(item_problem <<< "${item}")" ] || continue
-  title="$(jq -r '.title' <<< "${item}")"
-  size="$(jq -r '(.file_size | tonumber) / 1048576 | ceil' <<< "${item}")"
-  updated="$(jq -r '.time_updated' <<< "${item}")"
-  # GitHub stops accounts that open issues much faster than one a second.
-  [ "${opened}" = 0 ] || sleep 1
-  if [ -n "${required_by[${id}]:-}" ]; then
-    why="${title} is required on the Workshop by ${required_by[${id}]}"
-  else
-    why="${title} is one of the ${top} most subscribed maps on the Workshop"
+mapfile -t needed < <(cut -f 2 <<< "${required}" | grep .)
+offer "${needed[@]}"
+
+# The ranking a page of 100 at a time, as far as it takes: Steam's cursor reaches deeper than its page numbers.
+ranked=0
+cursor='*'
+while [ "${opened}" -lt "${wanted}" ] && [ "${ranked}" -lt "${top}" ]; do
+  if ! response="$(curl -fsS --max-time 30 -G --data-urlencode "key=${STEAM_API_KEY}" \
+    --data-urlencode "query_type=${BY_SUBSCRIPTIONS}" --data-urlencode "appid=${WORKSHOP_APP}" \
+    --data-urlencode "requiredtags[0]=Map" --data-urlencode "numperpage=100" --data-urlencode "cursor=${cursor}" \
+    --data-urlencode "ids_only=true" "${STEAM_QUERY}")" \
+    || ! jq -e '.response.total | type == "number"' <<< "${response}" > /dev/null 2>&1; then
+    echo "::error::Steam's Workshop query failed after the ${ranked} most subscribed maps"
+    exit 1
   fi
-  gh issue create --title "Add ${title} (${id})" --label add,ready \
-    --body "${why}, about ${size} MB, updated on $(utc_date "${updated}"). $(workshop_link "${id}")" > /dev/null
-  opened=$((opened + 1))
+  mapfile -t page < <(jq -r '.response.publishedfiledetails[]?.publishedfileid' <<< "${response}")
+  page=("${page[@]:0:top - ranked}")
+  for id in "${page[@]}"; do
+    ranked=$((ranked + 1))
+    rank[${id}]="${ranked}"
+  done
+  offer "${page[@]}"
+  cursor="$(jq -r '.response.next_cursor // empty' <<< "${response}")"
+  [ "${#page[@]}" -eq 100 ] && [ -n "${cursor}" ] || break
 done
-echo "Queued ${opened} items."
+
+if [ "${opened}" -lt "${wanted}" ]; then
+  echo "Queued ${opened} of the ${wanted} items wanted: the index has or queues the rest of the ${ranked} most subscribed maps."
+else
+  echo "Queued ${opened} items."
+fi
