@@ -1,6 +1,7 @@
 /*
 !/.gitignore
 !/.github/
+!/LICENSE
 !/README.md
 !/ci/
 !/items/
