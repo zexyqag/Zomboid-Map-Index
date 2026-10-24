@@ -1,0 +1,12 @@
+name: Add a map
+description: Ask for a Project Zomboid map from the Steam Workshop to be added to the index.
+title: Add a map
+labels: [add]
+body:
+  - type: input
+    id: item
+    attributes:
+      label: Workshop item
+      description: The map's Workshop link (https://steamcommunity.com/sharedfiles/filedetails/?id=...) or its ID. A check confirms it is a Project Zomboid item tagged Map and queues it.
+    validations:
+      required: true

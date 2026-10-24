@@ -1,0 +1,21 @@
+name: Test
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Lint scripts
+        run: shellcheck -x -S warning ci/*.sh test/*.sh
+
+      - name: Run tests
+        run: bash test/run.sh
