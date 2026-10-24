@@ -1,6 +1,7 @@
 /*
 !/.gitignore
 !/.github/
+!/README.md
 !/ci/
 !/items/
 !/test/
