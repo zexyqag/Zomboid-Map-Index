@@ -270,7 +270,8 @@ while IFS=$'\t' read -r _ _ _ map path; do
   awk -F '\t' -v file="${map}/spawnpoints.lua" '$1 == file { for (i = 2; i <= NF; i++) { gsub(/,/, "\t", $i); print $i } }' \
     "${tmp}/spawns" > "${tmp}/points"
   [ -s "${tmp}/points" ] || continue
-  java -jar "${ROOMS_READER:?}" "$([ -z "${path}" ] && echo 300 || echo 256)" "${map}" < "${tmp}/points"
+  # Java can open only the file names its locale can spell.
+  LC_ALL=C.UTF-8 java -jar "${ROOMS_READER:?}" "$([ -z "${path}" ] && echo 300 || echo 256)" "${map}" < "${tmp}/points"
 done < "${tmp}/maps" > "${tmp}/held"
 awk -F '\t' '$1 == "!" { print "Warning: " $2 "/" $3 " could not be read (" $4 "), so the buildings on its cell are unknown" > "/dev/stderr" }
   $1 != "!"' "${tmp}/held" > "${tmp}/rooms"

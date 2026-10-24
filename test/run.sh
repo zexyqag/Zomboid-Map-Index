@@ -67,7 +67,8 @@ printf '%s\n' "${ids[@]}" | jq -R . | jq -s -c --argjson items "${FAKE_ITEMS:-{\
   '{response: {publishedfiledetails: map(. as $id | $items[$id] // {publishedfileid: $id, result: 9})}}'
 EOF
 # gh logs each call on a line, its arguments joined by " | " (a --jq filter as "..."), answers the API with FAKE_OPEN
-# as the open issues through the filter and numbers the issues it creates from 20.
+# as the open issues through the filter, lists FAKE_LAST_BUILD as the last run that went through and numbers the
+# issues it creates from 20.
 cat > "${WORK}/bin/gh" <<'EOF'
 #!/bin/bash
 args=("$@") filter=
@@ -76,6 +77,7 @@ for i in "${!args[@]}"; do
 done
 (IFS='|'; printf '%s\n' "${args[*]}" | sed 's/|/ | /g') >> "${WORK}/gh-calls"
 [ "$1" = api ] && jq -r "${filter}" <<< "${FAKE_OPEN:-[]}"
+[ "$1 $2" = "run list" ] && printf '%s\n' "${FAKE_LAST_BUILD:-}"
 if [ "$1 $2" = "issue create" ]; then
   echo "https://github.com/owner/index/issues/$((20 + $(grep -c '^issue | create' "${WORK}/gh-calls") - 1))"
 fi
@@ -366,6 +368,9 @@ test_index_item() {
     "${WORK}/index-err" || fail "no warning of the header that can't be read: $(cat "${WORK}/index-err")"
   mkdir -p "${WORK}/nothing"
   expect_eq "$(bash "${REPO}/worker/index_item.sh" "${WORK}/nothing" 9 "Nothing" 1)" '{"format":2,"id":"9","title":"Nothing","timeUpdated":1,"mods":[]}'
+  # A folder name beyond ASCII, where the locale has no more.
+  make_item "${WORK}/安全区 item"
+  expect_eq "$(env -u LANG LC_ALL=POSIX bash "${REPO}/worker/index_item.sh" "${WORK}/安全区 item" 123 "Town Pack" 200 2> /dev/null)" "${ITEM_JSON}"
 }
 
 test_work() {
@@ -462,11 +467,12 @@ test_worker_run() {
   git -C "${clone}" push --quiet origin main
   git -C "${clone}" config user.name Test
   git -C "${clone}" config user.email test@example.com
-  # The worker's run: 123 written, 999 removed, 456 as it was, 321 failed.
+  # The worker's run: 123 written, 999 removed, 456 as it was, 321 failed; with FAKE_RACE, that clone pushes first.
   cat > "${WORK}/bin/docker" <<'EOF'
 #!/bin/bash
 printf '%s\n' "$*" >> "${WORK}/docker-calls"
 [ "$1" = run ] && [ -z "${FAKE_NO_PLAN:-}" ] || exit 0
+[ -z "${FAKE_RACE:-}" ] || git -C "${FAKE_RACE}" push --quiet origin HEAD:main
 printf '{"id": "123"}\n' > "${FAKE_CLONE}/items/123.json"
 rm -f "${FAKE_CLONE}/items/999.json"
 printf '%s\n' "1	add	123	Town Pack	done" "4	remove	999	Removed	done" "2	update	456	Local Map	done" "7	add	321	Broken	SteamCMD could not download it"
@@ -484,6 +490,31 @@ EOF
   rm -f "${WORK}/docker-calls"
   FAKE_NO_PLAN=1 bash "${clone}/worker/run.sh" --drop-downloads > /dev/null || fail "run.sh failed dropping downloads"
   expect_eq "$(sed -n 2p "${WORK}/docker-calls")" "run --rm --volume zomboid-map-index-cache:/cache --volume ${clone}/items:/items --env REPO=${remote%.git} --env DROP_DOWNLOADS=1 zomboid-map-index-worker"
+  # Each commit is pushed.
+  printf '#!/bin/sh\necho pushed >> "${WORK}/pushes"\n' > "${remote}/hooks/post-receive"
+  chmod +x "${remote}/hooks/post-receive"
+  commits() {
+    git -C "${remote}" update-ref refs/heads/main "$1"
+    git -C "${clone}" fetch --quiet origin
+    git -C "${clone}" reset --quiet --hard origin/main
+    rm -f "${WORK}/pushes"
+  }
+  local start
+  start="$(git -C "${remote}" rev-parse main~2)"
+  commits "${start}"
+  FAKE_CLONE="${clone}" bash "${clone}/worker/run.sh" > /dev/null || fail "run.sh failed"
+  expect_eq "$(paste -sd ' ' "${WORK}/pushes")" 'pushed pushed'
+  # A push that finds a commit made while the worker ran goes on top of it.
+  commits "${start}"
+  git clone --quiet "${remote}" "${WORK}/clone-other" 2> /dev/null
+  printf 'week\n' > "${WORK}/clone-other/vanilla"
+  git -C "${WORK}/clone-other" add vanilla
+  git -C "${WORK}/clone-other" -c user.name=Test -c user.email=test@example.com commit --quiet -m week
+  FAKE_CLONE="${clone}" FAKE_RACE="${WORK}/clone-other" bash "${clone}/worker/run.sh" > /dev/null || fail "run.sh failed on top of another commit"
+  expect_eq "$(git -C "${remote}" log --format=%s main | head -n 3 | paste -sd '|')" 'data: remove Removed (999)|data: add Town Pack (123)|week'
+  expect_eq "$(git -C "${clone}" status --porcelain)" ''
+  # The other clone's push, then each commit's, the first once on top of it.
+  expect_eq "$(paste -sd ' ' "${WORK}/pushes")" 'pushed pushed pushed'
 }
 
 # The service of owner/index, stopped by the fake sleep (after its first poll, or STOPS polls) with a ready issue that
@@ -491,7 +522,7 @@ EOF
 # items folder it gets and the key ssh would use, with its mode and first line.
 test_serve() {
   TEST=serve
-  local remote="${WORK}/serve-remote.git" seed="${WORK}/serve-seed" worker="${WORK}/serve-worker" clone="${WORK}/serve-clone"
+  local remote="${WORK}/serve-remote.git" seed="${WORK}/serve-seed" worker="${WORK}/serve-app/worker" clone="${WORK}/serve-clone"
   export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_COUNT=0
   git init --quiet --bare --initial-branch=main "${remote}"
   git clone --quiet "${remote}" "${seed}" 2> /dev/null
@@ -501,6 +532,8 @@ test_serve() {
   git -C "${seed}" -c user.name=Test -c user.email=test@example.com commit --quiet -m start
   git -C "${seed}" push --quiet origin main
   cp "${REPO}/worker/serve.sh" "${REPO}/worker/commit.sh" "${worker}/"
+  mkdir -p "${WORK}/serve-app/ci"
+  cp "${REPO}/ci/lib.sh" "${WORK}/serve-app/ci/"
   cat > "${worker}/work.sh" <<'EOF'
 #!/bin/bash
 key="${GIT_SSH_COMMAND#ssh -i }"
@@ -856,6 +889,33 @@ issue | create | --title | Add First (1001) | --label | add,ready | --body | Fir
   done
 }
 
+# The wait after a push before the site is built, with the last build an hour ago, past MAX_WAIT or never.
+test_settle() {
+  TEST=settle
+  local hour_ago
+  hour_ago="$(date -u -d '-1 hour' +%Y-%m-%dT%H:%M:%SZ)"
+  settle() {
+    rm -f "${WORK}/gh-calls" "${WORK}/sleep-calls"
+    WORKFLOW=Pages bash "${REPO}/ci/settle.sh"
+  }
+  expect_eq "$(FAKE_LAST_BUILD="${hour_ago}" settle)" 'Waiting 10m for more changes.'
+  expect_eq "$(cat "${WORK}/sleep-calls")" 600
+  expect_eq "$(cat "${WORK}/gh-calls")" 'run | list | --workflow | Pages | --branch | main | --status | success | --limit | 1 | --json | updatedAt | --jq | ...'
+  expect_eq "$(FAKE_LAST_BUILD="${hour_ago}" QUIET=30s MAX_WAIT=2h settle)" 'Waiting 30s for more changes.'
+  expect_eq "$(cat "${WORK}/sleep-calls")" 30
+  expect_eq "$(FAKE_LAST_BUILD="${hour_ago}" MAX_WAIT=1h settle)" "The site was last built at ${hour_ago}, 1h or more ago: building it now."
+  [ -e "${WORK}/sleep-calls" ] && fail "it waited past MAX_WAIT"
+  expect_eq "$(FAKE_LAST_BUILD="${hour_ago}" MAX_WAIT=59m settle)" "The site was last built at ${hour_ago}, 59m or more ago: building it now."
+  expect_eq "$(FAKE_LAST_BUILD="${hour_ago}" MAX_WAIT=61m settle)" 'Waiting 10m for more changes.'
+  expect_eq "$(settle)" 'The site was never built: building it now.'
+  [ -e "${WORK}/sleep-calls" ] && fail "it waited for a first build"
+  for setting in QUIET MAX_WAIT; do
+    (export "${setting}=10 minutes"; FAKE_LAST_BUILD="${hour_ago}" settle > "${WORK}/settle-out") && fail "it took ${setting} '10 minutes'"
+    expect_eq "$(cat "${WORK}/settle-out")" "::error::${setting} is '10 minutes', not a duration such as $([ "${setting}" = QUIET ] && echo 10m || echo 6h)"
+    [ -e "${WORK}/gh-calls" ] && fail "it asked GitHub with ${setting} '10 minutes'"
+  done
+}
+
 # The Workshop's figures of the index's items: 20 is as Steam has it, 10 has no votes and requires nothing, and Steam
 # no longer has 30.
 test_workshop() {
@@ -1040,7 +1100,7 @@ test_grid() {
   node "${REPO}/test/grid.mjs" || fail "the grid tests failed"
 }
 
-for t in test_request test_freshness test_index_item test_work test_worker_run test_serve test_vanilla test_library test_discover test_workshop test_site test_builds test_grid; do
+for t in test_request test_freshness test_index_item test_work test_worker_run test_serve test_vanilla test_library test_discover test_settle test_workshop test_site test_builds test_grid; do
   ("${t}"; exit "${FAILED}") || FAILED=1
 done
 if [ "${FAILED}" = 0 ]; then echo "Tests passed"; else echo "Tests failed"; exit 1; fi

@@ -3,24 +3,46 @@ name: Pages
 on:
   push:
     branches: [main]
-    paths: ['items/**', 'vanilla/**', 'site/**', 'ci/site.sh', 'ci/mod_info.sh', 'ci/workshop.sh', 'ci/lib.sh', '.github/workflows/pages.yml']
+    paths: ['items/**', 'vanilla/**', 'site/**', 'ci/site.sh', 'ci/mod_info.sh', 'ci/workshop.sh', 'ci/settle.sh', 'ci/lib.sh', '.github/workflows/pages.yml']
   # The Workshop's figures change every day.
   schedule:
     - cron: '47 7 * * *'
   workflow_dispatch:
 
 permissions:
+  actions: read
   contents: read
   pages: write
   id-token: write
 
-concurrency:
-  group: pages
-  cancel-in-progress: false
-
 jobs:
-  deploy:
+  # A push waits for more, so that a worker's round of pushes builds the site once: the next push cancels the wait.
+  settle:
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
+    concurrency:
+      group: pages-settle
+      cancel-in-progress: true
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Wait for more changes
+        run: bash ci/settle.sh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          WORKFLOW: ${{ github.workflow }}
+          QUIET: ${{ vars.PAGES_QUIET || '10m' }}
+          MAX_WAIT: ${{ vars.PAGES_MAX_WAIT || '6h' }}
+
+  deploy:
+    needs: settle
+    if: always() && (needs.settle.result == 'success' || needs.settle.result == 'skipped')
+    runs-on: ubuntu-latest
+    concurrency:
+      group: pages
+      cancel-in-progress: false
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}

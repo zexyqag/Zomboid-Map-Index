@@ -16,6 +16,11 @@ while IFS=$'\t' read -r number kind id title result; do
     continue
   fi
   git commit --quiet --message "data: ${kind} ${title} (${id})" --message "Closes #${number}"
-  git push --quiet
+  # A push that finds commits it doesn't have, such as the game's maps of the week, goes on top of them.
+  if ! git push --quiet 2> /dev/null; then
+    git fetch --quiet
+    git rebase --quiet --autostash '@{upstream}' > /dev/null
+    git push --quiet
+  fi
   echo "#${number} ${title}: ${kind}"
 done

@@ -2,6 +2,8 @@ name: Test
 
 on:
   push:
+    # The worker's data commits change nothing the tests run.
+    paths-ignore: ['items/**', 'vanilla/**']
   pull_request:
 
 permissions:

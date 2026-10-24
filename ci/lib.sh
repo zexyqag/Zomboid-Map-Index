@@ -1,6 +1,6 @@
 #!/bin/bash
 # Shared by the checks and the worker: Steam's public details of Workshop items, the cells of map folders, the items
-# of the index and of a Steam library, and the issues that queue work for the worker.
+# of the index and of a Steam library, the issues that queue work for the worker, and durations of settings.
 
 STEAM_DETAILS=https://api.steampowered.com/ISteamRemoteStorage/GetPublishedFileDetails/v1/
 # The same with a Web API key, and with the items each requires and its votes.
@@ -146,4 +146,12 @@ workshop_link() {
 
 utc_date() {
   date -u -d "@$1" +%Y-%m-%d
+}
+
+duration_seconds() {
+  # $1 = a duration: whole seconds, or minutes, hours or days with m, h or d. Prints it in seconds; fails when it isn't
+  # one.
+  [[ "$1" =~ ^([0-9]+)([smhd]?)$ ]] || return 1
+  local -A unit=([s]=1 [m]=60 [h]=3600 [d]=86400)
+  echo $((10#${BASH_REMATCH[1]} * ${unit[${BASH_REMATCH[2]:-s}]}))
 }

@@ -10,18 +10,18 @@
 # GIT_COMMITTER_EMAIL.
 set -euo pipefail
 here="$(dirname "$0")"
+# shellcheck source=ci/lib.sh
+. "${here}/../ci/lib.sh"
 
 repo="${REPO:?}"
 remote="${REMOTE:-git@github.com:${repo}.git}"
 clone="${CLONE_DIR:-/repo}"
 poll="${POLL:-5m}"
 interval="${INTERVAL:-6h}"
-if ! [[ "${interval}" =~ ^([0-9]+)([smhd]?)$ ]]; then
+if ! retry="$(duration_seconds "${interval}")"; then
   echo "INTERVAL is '${interval}', not a duration such as 6h" >&2
   exit 1
 fi
-declare -A unit=([s]=1 [m]=60 [h]=3600 [d]=86400)
-retry=$((10#${BASH_REMATCH[1]} * ${unit[${BASH_REMATCH[2]:-s}]}))
 
 if [ -n "${DEPLOY_KEY:-}" ]; then
   [ -f "${DEPLOY_KEY}" ] || ssh-keygen -q -t ed25519 -N '' -f "${DEPLOY_KEY}"
