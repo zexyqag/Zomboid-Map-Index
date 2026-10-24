@@ -18,6 +18,10 @@ Once a day a check also queues the most subscribed maps on the Workshop that the
 
 The checks run on GitHub Actions and only read public information from the Workshop; nothing in an issue is ever run. A worker in this repository, run by the maintainer, downloads the queued maps, reads their files and adds them to `items/`, one file per Workshop item.
 
+## Using the index
+
+The repository's GitHub Pages publish the whole index as `index.json`, `{"items": [...]}` with every entry of `items/` by Workshop ID, and the grid script as `grid-1.js`: an ES module that works out which maps are on each cell in `Map=` order and draws the cells on a canvas, for pages that show maps. A change to how pages call it comes as `grid-2.js`.
+
 ## Data
 
 `items/<workshop id>.json` holds one Workshop item: `format` (the version of this format, now 2; entries of an older one are read again), `id`, `title`, `timeUpdated` (the Workshop's update time it was read at) and `mods`, one per folder in the item's `mods/`:

@@ -567,7 +567,37 @@ key=fake-key query_type=9 appid=108600 requiredtags[0]=Map numperpage=100 page=2
   done
 }
 
-for t in test_request test_freshness test_index_item test_work test_worker_run test_library test_discover; do
+test_site() {
+  TEST=site
+  local repo="${WORK}/site-repo"
+  mkdir -p "${repo}/items" "${repo}/site"
+  cp -r "${REPO}/ci" "${repo}/"
+  cp "${REPO}/site/grid.js" "${repo}/site/"
+  # Without entries, an empty index.
+  bash "${repo}/ci/site.sh" "${WORK}/site-empty" || fail "the build failed without entries"
+  expect_eq "$(cat "${WORK}/site-empty/index.json")" '{"items":[]}'
+  # The entries by Workshop ID as numbers; the licence and other files stay out.
+  printf '{"id": "20", "title": "Twenty"}\n' > "${repo}/items/20.json"
+  printf '{"id": "3", "title": "Three"}\n' > "${repo}/items/3.json"
+  cp "${REPO}/items/LICENSE" "${repo}/items/"
+  bash "${repo}/ci/site.sh" "${WORK}/site" || fail "the build failed"
+  expect_eq "$(cat "${WORK}/site/index.json")" '{"items":[{"id":"3","title":"Three"},{"id":"20","title":"Twenty"}]}'
+  expect_eq "$(ls "${WORK}/site" | paste -sd ' ')" "grid-1.js index.json"
+  cmp -s "${WORK}/site/grid-1.js" "${REPO}/site/grid.js" || fail "grid-1.js isn't site/grid.js"
+  # The major version names the script.
+  sed -i "s/^export const VERSION = '1\.0\.0';$/export const VERSION = '12.3.4';/" "${repo}/site/grid.js"
+  bash "${repo}/ci/site.sh" "${WORK}/site-12" || fail "the build failed for version 12"
+  expect_eq "$(ls "${WORK}/site-12" | paste -sd ' ')" "grid-12.js index.json"
+  sed -i "s/^export const VERSION = .*/export const VERSION = '2';/" "${repo}/site/grid.js"
+  bash "${repo}/ci/site.sh" "${WORK}/site-bad" 2> /dev/null && fail "the build passed without a full version"
+}
+
+test_grid() {
+  TEST=grid
+  node "${REPO}/test/grid.mjs" || fail "the grid tests failed"
+}
+
+for t in test_request test_freshness test_index_item test_work test_worker_run test_library test_discover test_site test_grid; do
   ("${t}"; exit "${FAILED}") || FAILED=1
 done
 if [ "${FAILED}" = 0 ]; then echo "Tests passed"; else echo "Tests failed"; exit 1; fi
