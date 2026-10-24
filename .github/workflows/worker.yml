@@ -1,0 +1,49 @@
+name: Worker image
+
+on:
+  push:
+    paths: ['worker/**', 'ci/lib.sh', '.github/workflows/worker.yml']
+  pull_request:
+    paths: ['worker/**', 'ci/lib.sh', '.github/workflows/worker.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    env:
+      PUBLISH: ${{ github.event_name != 'pull_request' && github.ref_name == github.event.repository.default_branch }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Build the worker image
+        run: >-
+          docker build --file worker/Dockerfile --tag zomboid-map-index-worker
+          --label "org.opencontainers.image.source=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}" .
+
+      - name: Run the image's room reader
+        run: printf '1\t1\t0\n' | docker run --rm -i --entrypoint sh zomboid-map-index-worker -c 'java -jar "${ROOMS_READER}" 256 /tmp'
+
+      - name: Check the service's tools
+        run: docker run --rm --entrypoint sh zomboid-map-index-worker -c 'git --version && ssh -V && test -x /worker/worker/serve.sh'
+
+      # For servers that run the worker as a service (worker/serve.sh).
+      - name: Log in to GitHub Container Registry
+        if: env.PUBLISH == 'true'
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish the worker image
+        if: env.PUBLISH == 'true'
+        run: |
+          image="ghcr.io/${GITHUB_REPOSITORY,,}-worker"
+          docker tag zomboid-map-index-worker "${image}:latest"
+          docker tag zomboid-map-index-worker "${image}:${GITHUB_SHA::12}"
+          docker push --all-tags "${image}"

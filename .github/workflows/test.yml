@@ -19,15 +19,3 @@ jobs:
 
       - name: Run tests
         run: bash test/run.sh
-
-  worker:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v7
-
-      - name: Build the worker image
-        run: docker build --file worker/Dockerfile --tag zomboid-map-index-worker .
-
-      - name: Run the image's room reader
-        run: printf '1\t1\t0\n' | docker run --rm -i --entrypoint sh zomboid-map-index-worker -c 'java -jar "${ROOMS_READER}" 256 /tmp'

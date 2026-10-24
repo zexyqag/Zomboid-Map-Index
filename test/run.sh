@@ -61,10 +61,11 @@ if [ "$1 $2" = "issue create" ]; then
 fi
 exit 0
 EOF
-# sleep logs what it is asked to wait, and doesn't.
+# sleep logs what it is asked to wait, and doesn't; with FAKE_SLEEP_STOP it fails.
 cat > "${WORK}/bin/sleep" <<'EOF'
 #!/bin/bash
 printf '%s\n' "$*" >> "${WORK}/sleep-calls"
+[ -z "${FAKE_SLEEP_STOP:-}" ]
 EOF
 chmod +x "${WORK}/bin/curl" "${WORK}/bin/gh" "${WORK}/bin/sleep"
 export WORK PATH="${WORK}/bin:${PATH}"
@@ -402,7 +403,7 @@ test_worker_run() {
   git init --quiet --bare --initial-branch=main "${remote}"
   git clone --quiet "${remote}" "${clone}" 2> /dev/null
   mkdir -p "${clone}/worker" "${clone}/items"
-  cp "${REPO}/worker/run.sh" "${clone}/worker/"
+  cp "${REPO}/worker/run.sh" "${REPO}/worker/commit.sh" "${clone}/worker/"
   printf '{"id": "999"}\n' > "${clone}/items/999.json"
   printf '{"id": "456"}\n' > "${clone}/items/456.json"
   git -C "${clone}" add --all
@@ -432,6 +433,82 @@ EOF
   rm -f "${WORK}/docker-calls"
   FAKE_NO_PLAN=1 bash "${clone}/worker/run.sh" --drop-downloads > /dev/null || fail "run.sh failed dropping downloads"
   expect_eq "$(sed -n 2p "${WORK}/docker-calls")" "run --rm --volume zomboid-map-index-cache:/cache --volume ${clone}/items:/items --env REPO=${remote%.git} --env DROP_DOWNLOADS=1 zomboid-map-index-worker"
+}
+
+# The service, stopped by the fake sleep after its first round. work.sh is a fake that writes 123 and plans it and 456,
+# which is unchanged, and logs the items folder it gets and the key ssh would use, with its mode and text.
+test_serve() {
+  TEST=serve
+  local remote="${WORK}/serve-remote.git" seed="${WORK}/serve-seed" worker="${WORK}/serve-worker" clone="${WORK}/serve-clone"
+  export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_COUNT=0
+  git init --quiet --bare --initial-branch=main "${remote}"
+  git clone --quiet "${remote}" "${seed}" 2> /dev/null
+  mkdir -p "${seed}/items" "${worker}"
+  printf '{"id": "456"}\n' > "${seed}/items/456.json"
+  git -C "${seed}" add --all
+  git -C "${seed}" -c user.name=Test -c user.email=test@example.com commit --quiet -m start
+  git -C "${seed}" push --quiet origin main
+  cp "${REPO}/worker/serve.sh" "${REPO}/worker/commit.sh" "${worker}/"
+  cat > "${worker}/work.sh" <<'EOF'
+#!/bin/bash
+key="${GIT_SSH_COMMAND#ssh -i }"
+printf '%s|%s|%s\n' "${ITEMS_DIR}" "${GIT_SSH_COMMAND:-}" "$([ -z "${GIT_SSH_COMMAND:-}" ] || echo "$(stat -c %a "${key%% *}") $(cat "${key%% *}")")" \
+  >> "${WORK}/work-calls"
+printf '{"id": "123"}\n' > "${ITEMS_DIR}/123.json"
+printf '%s\n' "1	add	123	Town Pack	done" "2	update	456	Same	done"
+EOF
+  chmod +x "${worker}/work.sh"
+  export GIT_AUTHOR_NAME=Worker GIT_AUTHOR_EMAIL=worker@example.com GIT_COMMITTER_NAME=Worker GIT_COMMITTER_EMAIL=worker@example.com
+  serve() {
+    rm -f "${WORK}/sleep-calls" "${WORK}/work-calls"
+    FAKE_SLEEP_STOP=1 CLONE_DIR="${clone}" bash "${worker}/serve.sh" > "${WORK}/serve-out" 2> "${WORK}/serve-err" \
+      && fail "serve.sh stopped without the fake sleep"
+  }
+  REMOTE="${remote}" serve
+  expect_eq "$(cat "${WORK}/serve-out")" "$(printf '%s\n' 'Working through the queued requests' '#1 Town Pack: add' '#2 Same: unchanged')"
+  expect_eq "$(cat "${WORK}/serve-err")" ''
+  expect_eq "$(git -C "${remote}" log -1 --format='%an|%cn|%s|%b' main)" 'Worker|Worker|data: add Town Pack (123)|Closes #1'
+  expect_eq "$(cat "${WORK}/work-calls")" "${clone}/items||"
+  expect_eq "$(cat "${WORK}/sleep-calls")" 6h
+  # The next round starts from the remote as it is, now at another place, without what the clone had of its own, and
+  # with the key.
+  printf '{"id": "789"}\n' > "${seed}/items/789.json"
+  git -C "${seed}" pull --quiet --ff-only
+  git -C "${seed}" add --all
+  git -C "${seed}" -c user.name=Test -c user.email=test@example.com commit --quiet -m elsewhere
+  git -C "${seed}" push --quiet origin main
+  mv "${remote}" "${WORK}/serve-moved.git"
+  remote="${WORK}/serve-moved.git"
+  printf '{"id": "1"}\n' > "${clone}/items/1.json"
+  git -C "${clone}" add --all
+  git -C "${clone}" commit --quiet -m local
+  printf 'stray\n' > "${clone}/stray"
+  printf 'KEY\n' > "${WORK}/deploy-key"
+  chmod 644 "${WORK}/deploy-key"
+  REMOTE="${remote}" INTERVAL=30m DEPLOY_KEY="${WORK}/deploy-key" CACHE_DIR="${WORK}/serve-cache" serve
+  expect_eq "$(cat "${WORK}/serve-out")" "$(printf '%s\n' 'Working through the queued requests' '#1 Town Pack: unchanged' '#2 Same: unchanged')"
+  expect_eq "$(git -C "${clone}" log --format=%s | paste -sd ' ')" 'elsewhere data: add Town Pack (123) start'
+  expect_eq "$(git -C "${clone}" remote get-url origin)" "${remote}"
+  expect_eq "$(ls -A "${clone}" | paste -sd ' ')" '.git items'
+  expect_eq "$(ls "${clone}/items" | paste -sd ' ')" '123.json 456.json 789.json'
+  local key
+  key="$(sed -n 's/^[^|]*|ssh -i \([^ ]*\) .*/\1/p' "${WORK}/work-calls")"
+  expect_eq "$(cat "${WORK}/work-calls")" \
+    "${clone}/items|ssh -i ${key} -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=${WORK}/serve-cache/known_hosts|600 KEY"
+  [ -e "${key}" ] && fail "serve.sh left its copy of the key"
+  expect_eq "$(cat "${WORK}/sleep-calls")" 30m
+  # A round that fails waits for the next, as the remote may be back by then.
+  rm -rf "${clone}"
+  REMOTE="${WORK}/missing.git" INTERVAL=30m serve
+  expect_eq "$(tail -n 1 "${WORK}/serve-err")" 'This round failed; the next one is in 30m'
+  expect_eq "$(cat "${WORK}/sleep-calls")" 30m
+  [ -e "${WORK}/work-calls" ] && fail "serve.sh worked without a clone"
+  # The remote is the repository on GitHub by default.
+  mkdir -p "${WORK}/serve-bin"
+  printf '#!/bin/bash\nprintf "%%s\\n" "$*" >> "${WORK}/ssh-calls"\nexit 1\n' > "${WORK}/serve-bin/ssh"
+  chmod +x "${WORK}/serve-bin/ssh"
+  PATH="${WORK}/serve-bin:${PATH}" REPO=owner/index serve
+  grep -q "git@github.com git-upload-pack 'owner/index.git'" "${WORK}/ssh-calls" || fail "serve.sh did not clone from GitHub: $(cat "${WORK}/ssh-calls")"
 }
 
 test_library() {
@@ -697,7 +774,7 @@ test_grid() {
   node "${REPO}/test/grid.mjs" || fail "the grid tests failed"
 }
 
-for t in test_request test_freshness test_index_item test_work test_worker_run test_library test_discover test_site test_builds test_grid; do
+for t in test_request test_freshness test_index_item test_work test_worker_run test_serve test_library test_discover test_site test_builds test_grid; do
   ("${t}"; exit "${FAILED}") || FAILED=1
 done
 if [ "${FAILED}" = 0 ]; then echo "Tests passed"; else echo "Tests failed"; exit 1; fi
