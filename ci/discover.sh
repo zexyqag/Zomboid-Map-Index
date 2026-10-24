@@ -1,7 +1,8 @@
 #!/bin/bash
-# Queues the most subscribed maps of the Workshop that the index doesn't have and no open issue queues, most
-# subscribed first, until DISCOVER_QUEUE issues labelled ready are open. Only the DISCOVER_TOP most subscribed
-# items tagged Map count. Steam ranks them for a Web API key in STEAM_API_KEY.
+# Queues what the index doesn't have and no open issue queues, until DISCOVER_QUEUE issues labelled ready are open:
+# first the items that the items in the index require on the Workshop, such as tile packs, then the most subscribed
+# maps of the Workshop, most subscribed first, of the DISCOVER_TOP most subscribed items tagged Map. Steam tells both
+# for a Web API key in STEAM_API_KEY.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 # shellcheck source=ci/lib.sh
@@ -26,6 +27,26 @@ if [ "${wanted}" -le 0 ]; then
 fi
 open="$(jq -r '.[] | "\(.number)\t\(.title)"' <<< "${issues}")"
 
+missing() {
+  # stdin = workshop IDs. Prints those the index doesn't have and no open issue queues, each once.
+  awk '!seen[$0]++' | while IFS= read -r id; do
+    [ -f "items/${id}.json" ] || [ -n "$(queued_in "${id}" <<< "${open}")" ] || printf '%s\n' "${id}"
+  done
+}
+
+# What the index's items require on the Workshop, as "<item>\t<required item>", and per required item the titles of
+# those that require it.
+if ! required="$(indexed_ids | full_details | required_items)"; then
+  echo "::error::Steam's Workshop details of the index's items could not be read"
+  exit 1
+fi
+declare -A required_by=()
+while IFS=$'\t' read -r item needed; do
+  [ -n "${item}" ] || continue
+  title="$(jq -r '.title' "items/${item}.json")"
+  required_by[${needed}]="${required_by[${needed}]:+${required_by[${needed}]}, }${title}"
+done <<< "${required}"
+
 ranked=()
 for ((page = 1; (page - 1) * 100 < top; page++)); do
   if ! response="$(curl -fsS --max-time 30 -G --data-urlencode "key=${STEAM_API_KEY}" \
@@ -40,12 +61,7 @@ for ((page = 1; (page - 1) * 100 < top; page++)); do
   [ "$(jq '.response.publishedfiledetails // [] | length' <<< "${response}")" -eq 100 ] || break
 done
 
-candidates=()
-for id in "${ranked[@]:0:top}"; do
-  if [ ! -f "items/${id}.json" ] && [ -z "$(queued_in "${id}" <<< "${open}")" ]; then
-    candidates+=("${id}")
-  fi
-done
+mapfile -t candidates < <({ cut -f 2 <<< "${required}"; printf '%s\n' "${ranked[@]:0:top}"; } | grep . | missing)
 [ "${#candidates[@]}" -gt 0 ] || exit 0
 if ! details="$(printf '%s\n' "${candidates[@]}" | steam_details)"; then
   echo "::error::Steam's Workshop details could not be read"
@@ -63,9 +79,13 @@ for id in "${candidates[@]}"; do
   updated="$(jq -r '.time_updated' <<< "${item}")"
   # GitHub stops accounts that open issues much faster than one a second.
   [ "${opened}" = 0 ] || sleep 1
+  if [ -n "${required_by[${id}]:-}" ]; then
+    why="${title} is required on the Workshop by ${required_by[${id}]}"
+  else
+    why="${title} is one of the ${top} most subscribed maps on the Workshop"
+  fi
   gh issue create --title "Add ${title} (${id})" --label add,ready \
-    --body "${title} is one of the ${top} most subscribed maps on the Workshop, about ${size} MB, updated on $(utc_date "${updated}"). $(workshop_link "${id}")" \
-    > /dev/null
+    --body "${why}, about ${size} MB, updated on $(utc_date "${updated}"). $(workshop_link "${id}")" > /dev/null
   opened=$((opened + 1))
 done
-echo "Queued ${opened} maps."
+echo "Queued ${opened} items."

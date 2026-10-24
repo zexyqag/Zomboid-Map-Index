@@ -3,7 +3,10 @@ name: Pages
 on:
   push:
     branches: [main]
-    paths: ['items/**', 'vanilla/**', 'site/**', 'ci/site.sh', 'ci/mod_info.sh', '.github/workflows/pages.yml']
+    paths: ['items/**', 'vanilla/**', 'site/**', 'ci/site.sh', 'ci/mod_info.sh', 'ci/workshop.sh', 'ci/lib.sh', '.github/workflows/pages.yml']
+  # The Workshop's figures change every day.
+  schedule:
+    - cron: '47 7 * * *'
   workflow_dispatch:
 
 permissions:
@@ -28,8 +31,13 @@ jobs:
       - name: Configure Pages
         uses: actions/configure-pages@v6
 
+      - name: Read the Workshop's figures
+        run: bash ci/workshop.sh > "${RUNNER_TEMP}/workshop.json"
+        env:
+          STEAM_API_KEY: ${{ secrets.STEAM_API_KEY }}
+
       - name: Build the site
-        run: bash ci/site.sh _site
+        run: bash ci/site.sh _site "${RUNNER_TEMP}/workshop.json"
 
       # A re-run keeps the artifacts of earlier attempts, and deploy-pages refuses two with one name.
       - name: Upload Pages artifact

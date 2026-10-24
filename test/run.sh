@@ -14,7 +14,7 @@ expect_eq() {
 }
 
 # Steam answers from FAKE_ITEMS ({"<id>": details}); an ID it doesn't have gets result 9, and it leaves out
-# FAKE_STEAM_SKIP. Its Workshop query ranks FAKE_RANKED (IDs separated by spaces), 100 a page, and logs its
+# FAKE_STEAM_SKIP. Its keyed details answer the same, log their parameters and fail with FAKE_FULL_DOWN. Its Workshop query ranks FAKE_RANKED (IDs separated by spaces), 100 a page, and logs its
 # parameters. GitHub lists FAKE_ISSUES, then FAKE_ISSUES_2 as the second page.
 mkdir -p "${WORK}/bin"
 cat > "${WORK}/bin/curl" <<'EOF'
@@ -43,6 +43,12 @@ if [ "${*: -1}" = https://api.steampowered.com/IPublishedFileService/QueryFiles/
   exit 0
 fi
 [ -n "${FAKE_STEAM_DOWN:-}" ] && exit 7
+if [ "${*: -1}" = https://api.steampowered.com/IPublishedFileService/GetDetails/v1/ ]; then
+  params=()
+  for arg; do [[ "${arg}" == *=* ]] && params+=("${arg}"); done
+  echo "${params[*]}" >> "${WORK}/full-calls"
+  [ -n "${FAKE_FULL_DOWN:-}" ] && exit 22
+fi
 ids=()
 for arg; do
   [[ "${arg}" =~ ^publishedfileids\[[0-9]+\]=(.*)$ ]] && [ "${BASH_REMATCH[1]}" != "${FAKE_STEAM_SKIP:-}" ] && ids+=("${BASH_REMATCH[1]}")
@@ -152,6 +158,7 @@ form() { printf '### Workshop item\n\n%s\n' "$1"; }
 
 test_request() {
   TEST=request
+  export STEAM_API_KEY=fake-key
   mkdir -p "${WORK}/request/items"
   cp -r "${REPO}/ci" "${WORK}/request/"
   export FAKE_ITEMS
@@ -187,7 +194,7 @@ Raven Creek 42|This needs a Workshop link (https://steamcommunity.com/sharedfile
 444|Steam has no public Workshop item with the ID 444.
 111|Workshop item 111 isn't for Project Zomboid.
 222|Steam has banned Workshop item 222.
-333|Workshop item 333 isn't tagged Map on the Workshop, so the index doesn't take it.
+333|Workshop item 333 isn't tagged Map on the Workshop and no item in the index requires it, so the index doesn't take it.
 EOF
 
   # Queued in another open issue already; this issue's own title doesn't count.
@@ -218,6 +225,22 @@ issue | comment | 9 | --body | Queued: the index has Raven Creek B42 from its up
     expect_eq "$(calls | tail -n 2)" "issue | edit | 9 | --title | Update Raven Creek B42 (3484263516) | --add-label | update,ready | --remove-label | add
 issue | comment | 9 | --body | Queued: the index has Raven Creek B42 in an older format, so it is read again. This issue closes when the index has it."
   done
+
+  # An item not tagged Map that an item in the index requires.
+  FAKE_ITEMS="$(jq -c '.["3484263516"].children = [{publishedfileid: "444", sortorder: 0, file_type: 0}, {publishedfileid: "333", sortorder: 1, file_type: 0}]' <<< "${FAKE_ITEMS}")"
+  rm -f "${WORK}/full-calls"
+  request "$(form 333)"
+  expect_eq "$(calls | tail -n 2)" "issue | edit | 9 | --title | Add Not a Map (333) | --add-label | add,ready
+issue | comment | 9 | --body | Queued: Not a Map, about 115 MB, updated on the Workshop on $(date -u -d @1 +%Y-%m-%d). This issue closes when the index has it."
+  expect_eq "$(cat "${WORK}/full-calls")" 'key=fake-key includechildren=true includevotes=true publishedfileids[0]=3484263516'
+  # Such an item can't be checked without a key or the keyed details, and a map needs neither.
+  for broken in 'STEAM_API_KEY=' 'FAKE_FULL_DOWN=1'; do
+    env "${broken}" bash -c "$(declare -f request calls); request \"\$1\"" _ "$(form 333)" > /dev/null 2>&1 && fail "the check passed with ${broken}"
+    expect_eq "$(calls)" "${LABELS}"
+  done
+  rm "${WORK}/request/items/3484263516.json"
+  STEAM_API_KEY='' request "$(form 3484263516)"
+  expect_eq "$(calls | tail -n 1)" "issue | comment | 9 | --body | ${queued}"
 
   # Without Steam the check fails and leaves the issue as it is.
   FAKE_STEAM_DOWN=1 request "$(form 3484263516)" > /dev/null && fail "the check passed without Steam"
@@ -327,6 +350,7 @@ test_work() {
   make_item "${dir}/content/123"
   make_item "${dir}/content/789"
   make_item "${dir}/content/654"
+  make_item "${dir}/content/333"
   make_item "${dir}/library/content/108600/456"
   make_item "${dir}/library/content/108600/789"
   make_item "${dir}/library/content/108600/654"
@@ -373,14 +397,14 @@ EOF
   expect_eq "${out}" "$(printf '%s\n' "1	add	123	Town Pack	done" "2	update	456	Local Map	done" "3	add	789	Stale Map	done" \
     "4	remove	999	Removed	done" "5	remove	555	Back	the Workshop has it again" "6	-	-	Add a map	its title has no Workshop ID or it has no add, update or gone label" \
     "7	add	321	Broken	SteamCMD could not download it" "9	add	322	Partial	SteamCMD could not download it" \
-    "10	update	333	Untagged	the Workshop says: tag" "11	add	654	Details Only	done")"
+    "10	update	333	Untagged	done" "11	add	654	Details Only	done")"
   expect_eq "$(jq -c . "${dir}/items/123.json")" "${ITEM_JSON}"
   expect_eq "$(jq -c '[.id, .title, .timeUpdated]' "${dir}/items/456.json" "${dir}/items/789.json" | paste -sd ' ')" '["456","Local Map",300] ["789","Stale Map",200]'
   [ -e "${dir}/items/999.json" ] && fail "the gone item is still in the index"
   [ -e "${dir}/items/321.json" ] && fail "the item that failed to download is in the index"
   # 456 came from the library; 789's copy there is older than the Workshop's and 654 isn't installed in it, so they
   # were downloaded; 321 and 322 three times.
-  expect_eq "$(sed -E 's/.* ([0-9]+) \+quit$/\1/' "${WORK}/steamcmd-calls" | paste -sd ' ')" "123 789 321 321 321 322 322 322 654"
+  expect_eq "$(sed -E 's/.* ([0-9]+) \+quit$/\1/' "${WORK}/steamcmd-calls" | paste -sd ' ')" "123 789 321 321 321 322 322 322 333 654"
   expect_eq "$(head -n 1 "${WORK}/steamcmd-calls")" "+force_install_dir ${dir}/cache +login anonymous +workshop_download_item 108600 123 +quit"
   grep -q '^Reading Local Map (456) from the Steam library$' "${WORK}/work-err" || fail "no word of the library copy: $(cat "${WORK}/work-err")"
   [ -d "${dir}/cache/steamapps/workshop/content/108600/123" ] || fail "the download isn't kept"
@@ -392,7 +416,7 @@ EOF
   [ -e "${dir}/cache/steamapps/workshop" ] && fail "a download is left: $(find "${dir}/cache" -mindepth 3 -maxdepth 5)"
   # After the first, which finds what the run before kept, each download starts from nothing, after one that failed
   # too; the tries of one download keep what came before.
-  expect_eq "$(paste -sd ' ' "${WORK}/steamcmd-found")" "123:123,322,654,789 789: 321: 321: 321: 322: 322:322 322:322 654:"
+  expect_eq "$(paste -sd ' ' "${WORK}/steamcmd-found")" "123:123,322,333,654,789 789: 321: 321: 321: 322: 322:322 322:322 333: 654:"
   expect_eq "$(sed -E 's/.*&page=//' "${WORK}/github-calls" | paste -sd ' ')" "1 2"
   expect_eq "$(head -n 1 "${WORK}/github-calls")" "https://api.github.com/repos/owner/index/issues?state=open&labels=ready&per_page=100&page=1"
 }
@@ -674,53 +698,102 @@ test_discover() {
   mkdir -p "${repo}/items"
   cp -r "${REPO}/ci" "${repo}/"
   printf '{"format": 2, "id": "1003", "title": "Third", "timeUpdated": 1}\n' > "${repo}/items/1003.json"
-  # Ranked: 1001 to 1250. 1002 is banned, 1003 indexed, 1004 queued, 1007 not tagged Map; the Workshop doesn't
-  # have those after 1007.
+  printf '{"format": 2, "id": "1101", "title": "Tiles", "timeUpdated": 1}\n' > "${repo}/items/1101.json"
+  # Ranked: 1001 to 1250. 1002 is banned, 1003 indexed, 1004 queued; the Workshop doesn't have those after 1006. The
+  # indexed Third requires the tile packs 1102 (not tagged Map) and 1101 (indexed) and the queued 1004, and Tiles 1102
+  # too.
   export FAKE_RANKED FAKE_ITEMS STEAM_API_KEY=fake-key
   FAKE_RANKED="$(seq -s ' ' 1001 1250)"
   FAKE_ITEMS="$(jq -n -c --argjson first "$(details 1001 First 1789883053)" --argjson banned "$(details 1002 Banned 1 108600 1)" \
     --argjson third "$(details 1003 Third 1)" --argjson fourth "$(details 1004 Fourth 1)" \
     --argjson fifth "$(details 1005 Fifth 1789883053)" --argjson sixth "$(details 1006 Sixth 1)" \
-    --argjson mod "$(details 1007 "A Mod" 1 108600 0 "Build 42,Items")" \
-    '{"1001": $first, "1002": $banned, "1003": $third, "1004": $fourth, "1005": $fifth, "1006": $sixth, "1007": $mod}')"
+    --argjson tiles "$(details 1101 Tiles 1 108600 0 "Build 42")" --argjson more "$(details 1102 "More Tiles" 1 108600 0 "Build 42")" \
+    '{"1001": $first, "1002": $banned, "1003": ($third + {children: [{publishedfileid: "1102"}, {publishedfileid: "1101"}, {publishedfileid: "1004"}]}),
+      "1004": $fourth, "1005": $fifth, "1006": $sixth, "1101": ($tiles + {children: [{publishedfileid: "1102"}]}), "1102": $more}')"
   export FAKE_OPEN='[{"number": 4, "title": "Add Fourth (1004)", "labels": [{"name": "add"}, {"name": "ready"}]},
     {"number": 5, "title": "A question", "labels": []}]'
   discover() {
-    rm -f "${WORK}/gh-calls" "${WORK}/sleep-calls" "${WORK}/query-calls"
+    rm -f "${WORK}/gh-calls" "${WORK}/sleep-calls" "${WORK}/query-calls" "${WORK}/full-calls"
     DISCOVER_TOP="$1" DISCOVER_QUEUE="$2" bash "${repo}/ci/discover.sh"
   }
   created() { calls | grep '^issue | create' | sed -E 's/^issue \| create \| --title \| ([^|]*) \|.*/\1/' | paste -sd ',' -; }
 
-  # One queued, two more wanted: the two most subscribed it can take, of the 150 most subscribed.
+  # One queued, two more wanted: first what the index's items require, then the most subscribed it can take, of the
+  # 150 most subscribed.
   out="$(discover 150 3)" || fail "the check failed"
-  expect_eq "${out}" "Queued 2 maps."
-  expect_eq "$(calls | grep '^issue | create')" "issue | create | --title | Add First (1001) | --label | add,ready | --body | First is one of the 150 most subscribed maps on the Workshop, about 115 MB, updated on $(date -u -d @1789883053 +%Y-%m-%d). https://steamcommunity.com/sharedfiles/filedetails/?id=1001
-issue | create | --title | Add Fifth (1005) | --label | add,ready | --body | Fifth is one of the 150 most subscribed maps on the Workshop, about 115 MB, updated on $(date -u -d @1789883053 +%Y-%m-%d). https://steamcommunity.com/sharedfiles/filedetails/?id=1005"
+  expect_eq "${out}" "Queued 2 items."
+  expect_eq "$(calls | grep '^issue | create')" "issue | create | --title | Add More Tiles (1102) | --label | add,ready | --body | More Tiles is required on the Workshop by Third, Tiles, about 115 MB, updated on $(date -u -d @1 +%Y-%m-%d). https://steamcommunity.com/sharedfiles/filedetails/?id=1102
+issue | create | --title | Add First (1001) | --label | add,ready | --body | First is one of the 150 most subscribed maps on the Workshop, about 115 MB, updated on $(date -u -d @1789883053 +%Y-%m-%d). https://steamcommunity.com/sharedfiles/filedetails/?id=1001"
+  expect_eq "$(cat "${WORK}/full-calls")" 'key=fake-key includechildren=true includevotes=true publishedfileids[0]=1003 publishedfileids[1]=1101'
   expect_eq "$(head -n 1 "${WORK}/gh-calls")" "issue | list | --state | open | --limit | 1000 | --json | number,title,labels"
   expect_eq "$(cat "${WORK}/sleep-calls")" "1"
   expect_eq "$(cat "${WORK}/query-calls")" "key=fake-key query_type=9 appid=108600 requiredtags[0]=Map numperpage=100 page=1 ids_only=true
 key=fake-key query_type=9 appid=108600 requiredtags[0]=Map numperpage=100 page=2 ids_only=true"
   # Only the most subscribed count, and not more than it wants.
   discover 5 10 > /dev/null || fail "the check failed with a short top"
-  expect_eq "$(created)" "Add First (1001),Add Fifth (1005)"
+  expect_eq "$(created)" "Add More Tiles (1102),Add First (1001),Add Fifth (1005)"
   expect_eq "$(wc -l < "${WORK}/query-calls")" 1
   discover 500 2 > /dev/null || fail "the check failed with one wanted"
-  expect_eq "$(created)" "Add First (1001)"
+  expect_eq "$(created)" "Add More Tiles (1102)"
   # Fewer ranked than the top: no more pages.
   FAKE_RANKED="$(seq -s ' ' 1001 1050)" discover 500 10 > /dev/null || fail "the check failed with few ranked"
   expect_eq "$(wc -l < "${WORK}/query-calls")" 1
-  expect_eq "$(created)" "Add First (1001),Add Fifth (1005),Add Sixth (1006)"
+  expect_eq "$(created)" "Add More Tiles (1102),Add First (1001),Add Fifth (1005),Add Sixth (1006)"
+  # Required items queued already, or ranked too, come once.
+  FAKE_OPEN='[{"number": 4, "title": "Add Fourth (1004)", "labels": [{"name": "add"}, {"name": "ready"}]},
+    {"number": 6, "title": "Add More Tiles (1102)", "labels": [{"name": "add"}, {"name": "ready"}]}]' \
+    FAKE_RANKED='1102 1001' discover 500 10 > /dev/null || fail "the check failed with the tile pack queued"
+  expect_eq "$(created)" "Add First (1001)"
+  FAKE_RANKED='1102 1001' discover 500 10 > /dev/null || fail "the check failed with the tile pack ranked"
+  expect_eq "$(created)" "Add More Tiles (1102),Add First (1001)"
   # A full queue asks Steam nothing.
   out="$(discover 150 1)" || fail "the check failed with a full queue"
   expect_eq "${out}" "The queue is full: 1 issues are ready for the worker."
   [ -e "${WORK}/query-calls" ] && fail "it queried Steam with a full queue"
+  [ -e "${WORK}/full-calls" ] && fail "it read the index's details with a full queue"
   # Without a key, or when Steam fails, it opens nothing.
   STEAM_API_KEY='' discover 150 3 > /dev/null && fail "it passed without a key"
   expect_eq "$(calls)" ""
-  for down in FAKE_QUERY_DOWN FAKE_QUERY_BAD FAKE_STEAM_DOWN; do
+  for down in FAKE_QUERY_DOWN FAKE_QUERY_BAD FAKE_STEAM_DOWN FAKE_FULL_DOWN; do
     (export "${down}=1"; discover 150 3 > /dev/null) && fail "it passed with ${down}"
     expect_eq "$(created)" ""
   done
+}
+
+# The Workshop's figures of the index's items: 20 is as Steam has it, 10 has no votes and requires nothing, and Steam
+# no longer has 30.
+test_workshop() {
+  TEST=workshop
+  local repo="${WORK}/workshop-repo" out
+  mkdir -p "${repo}/items"
+  cp -r "${REPO}/ci" "${repo}/"
+  export STEAM_API_KEY=fake-key FAKE_ITEMS
+  out="$(bash "${repo}/ci/workshop.sh")" || fail "workshop.sh failed without items"
+  expect_eq "${out}" '{}'
+  for id in 10 20 30; do printf '{"id": "%s"}\n' "${id}" > "${repo}/items/${id}.json"; done
+  FAKE_ITEMS="$(jq -n -c '{
+    "10": {publishedfileid: "10", result: 1, subscriptions: 1, lifetime_subscriptions: 2, favorited: 0, lifetime_favorited: 0, views: 3,
+      file_size: "1024", time_created: 4, time_updated: 5, preview_url: "https://images.example/10.png"},
+    "20": {publishedfileid: "20", result: 1, subscriptions: 193995, lifetime_subscriptions: 376146, favorited: 7940, lifetime_favorited: 9322,
+      views: 236590, vote_data: {score: 0.94, votes_up: 900, votes_down: 40}, num_comments_public: 120, file_size: "120169463",
+      time_created: 1747662239, time_updated: 1789883053, preview_url: "https://images.example/20.png",
+      children: [{publishedfileid: "11", sortorder: 0, file_type: 0}, {publishedfileid: "12", sortorder: 1, file_type: 0}]}}')"
+  rm -f "${WORK}/full-calls"
+  out="$(bash "${repo}/ci/workshop.sh")" || fail "workshop.sh failed"
+  expect_eq "${out}" '{"10":{"subscribers":1,"lifetimeSubscribers":2,"favorites":0,"lifetimeFavorites":0,"visitors":3,"votesUp":null,"votesDown":null,"score":null,"comments":null,"fileSize":1024,"timeCreated":4,"timeUpdated":5,"preview":"https://images.example/10.png","requires":[]},"20":{"subscribers":193995,"lifetimeSubscribers":376146,"favorites":7940,"lifetimeFavorites":9322,"visitors":236590,"votesUp":900,"votesDown":40,"score":0.94,"comments":120,"fileSize":120169463,"timeCreated":1747662239,"timeUpdated":1789883053,"preview":"https://images.example/20.png","requires":["11","12"]}}'
+  expect_eq "$(cat "${WORK}/full-calls")" 'key=fake-key includechildren=true includevotes=true publishedfileids[0]=10 publishedfileids[1]=20 publishedfileids[2]=30'
+  # More than 100 items take more calls.
+  for id in $(seq 1000 1150); do printf '{"id": "%s"}\n' "${id}" > "${repo}/items/${id}.json"; done
+  rm -f "${WORK}/full-calls"
+  bash "${repo}/ci/workshop.sh" > /dev/null || fail "workshop.sh failed with many items"
+  expect_eq "$(wc -l < "${WORK}/full-calls")" 2
+  # Without a key, or when Steam fails or leaves an item out, it fails.
+  for broken in 'STEAM_API_KEY=' FAKE_FULL_DOWN=1 FAKE_STEAM_SKIP=20; do
+    env "${broken}" bash "${repo}/ci/workshop.sh" > "${WORK}/workshop-out" 2>&1 && fail "workshop.sh passed with ${broken}"
+    grep -q "Steam's Workshop details of the index's items could not be read" "${WORK}/workshop-out" || fail "no word of why with ${broken}"
+  done
+  STEAM_API_KEY='' bash "${repo}/ci/workshop.sh" > "${WORK}/workshop-out" 2>&1
+  grep -q 'STEAM_API_KEY is empty' "${WORK}/workshop-out" || fail "no word of the missing key"
 }
 
 test_site() {
@@ -729,10 +802,14 @@ test_site() {
   mkdir -p "${repo}/items" "${repo}/site"
   cp -r "${REPO}/ci" "${repo}/"
   cp "${REPO}/site/grid.js" "${repo}/site/"
-  # Without entries, an empty index, and without vanilla/ no builds.
-  bash "${repo}/ci/site.sh" "${WORK}/site-empty" || fail "the build failed without entries"
+  printf '{"3": {"subscribers": 5}}\n' > "${WORK}/workshop.json"
+  # Without entries, an empty index, and without vanilla/ no builds; the Workshop's figures as they are.
+  bash "${repo}/ci/site.sh" "${WORK}/site-empty" "${WORK}/workshop.json" || fail "the build failed without entries"
   expect_eq "$(cat "${WORK}/site-empty/index.json")" '{"items":[]}'
-  expect_eq "$(ls "${WORK}/site-empty" | paste -sd ' ')" "grid-1.js index.json"
+  expect_eq "$(ls "${WORK}/site-empty" | paste -sd ' ')" "grid-1.js index.json workshop.json"
+  expect_eq "$(cat "${WORK}/site-empty/workshop.json")" '{"3":{"subscribers":5}}'
+  bash "${repo}/ci/site.sh" "${WORK}/site-none" 2> /dev/null && fail "the build passed without the Workshop's figures"
+  bash "${repo}/ci/site.sh" "${WORK}/site-none" "${WORK}/missing.json" 2> /dev/null && fail "the build passed with figures that aren't there"
   # The entries by Workshop ID as numbers; the licence and other files stay out.
   mkdir -p "${repo}/vanilla"
   printf '{"gameVersion": "41.78.21", "branch": "legacy41", "maps": []}\n' > "${repo}/vanilla/41.json"
@@ -740,16 +817,16 @@ test_site() {
   printf '{"id": "20", "title": "Twenty"}\n' > "${repo}/items/20.json"
   printf '{"id": "3", "title": "Three"}\n' > "${repo}/items/3.json"
   cp "${REPO}/items/LICENSE" "${repo}/items/"
-  bash "${repo}/ci/site.sh" "${WORK}/site" || fail "the build failed"
+  bash "${repo}/ci/site.sh" "${WORK}/site" "${WORK}/workshop.json" || fail "the build failed"
   expect_eq "$(cat "${WORK}/site/index.json")" '{"items":[{"id":"3","title":"Three"},{"id":"20","title":"Twenty"}]}'
-  expect_eq "$(ls "${WORK}/site" | paste -sd ' ')" "build-41.json build-42.json grid-1.js index.json"
+  expect_eq "$(ls "${WORK}/site" | paste -sd ' ')" "build-41.json build-42.json grid-1.js index.json workshop.json"
   cmp -s "${WORK}/site/grid-1.js" "${REPO}/site/grid.js" || fail "grid-1.js isn't site/grid.js"
   # The major version names the script.
   sed -i "s/^export const VERSION = '1\.0\.0';$/export const VERSION = '12.3.4';/" "${repo}/site/grid.js"
-  bash "${repo}/ci/site.sh" "${WORK}/site-12" || fail "the build failed for version 12"
-  expect_eq "$(ls "${WORK}/site-12" | paste -sd ' ')" "build-41.json build-42.json grid-12.js index.json"
+  bash "${repo}/ci/site.sh" "${WORK}/site-12" "${WORK}/workshop.json" || fail "the build failed for version 12"
+  expect_eq "$(ls "${WORK}/site-12" | paste -sd ' ')" "build-41.json build-42.json grid-12.js index.json workshop.json"
   sed -i "s/^export const VERSION = .*/export const VERSION = '2';/" "${repo}/site/grid.js"
-  bash "${repo}/ci/site.sh" "${WORK}/site-bad" 2> /dev/null && fail "the build passed without a full version"
+  bash "${repo}/ci/site.sh" "${WORK}/site-bad" "${WORK}/workshop.json" 2> /dev/null && fail "the build passed without a full version"
 }
 
 # Item 7 has Town, read from 42/ (42.22 is newer than the game) and common/ on Build 42 and from the mod folder itself on
@@ -770,7 +847,8 @@ test_builds() {
   }
   vanilla 41 41.78.21 legacy41
   vanilla 42 42.21.0 public
-  bash "${repo}/ci/site.sh" "${WORK}/builds-empty" || fail "the build failed without entries"
+  printf '{"7": {"subscribers": 9, "requires": ["13"]}, "99": {"subscribers": 1}}\n' > "${WORK}/workshop.json"
+  bash "${repo}/ci/site.sh" "${WORK}/builds-empty" "${WORK}/workshop.json" || fail "the build failed without entries"
   expect_eq "$(cat "${WORK}/builds-empty/build-42.json")" '{"gameVersion":"42.21.0","vanilla":[{"name":"Muldraugh, KY","cells":[[42,1,2]]},{"name":"Riverside, KY","cells":[]}],"items":[],"maps":[],"conflicts":[],"providers":{}}'
   cat > "${repo}/items/7.json" <<'JSON'
 {"format": 2, "id": "7", "title": "Town Pack", "timeUpdated": 1690000000, "mods": [
@@ -816,7 +894,7 @@ JSON
     > "${repo}/items/8.json"
   printf '{"format": 2, "id": "9", "title": "Tab", "timeUpdated": 5, "mods": [{"folder": "A\\tB", "roots": [{"path": "", "modInfo": ["id=Tab"]}]}]}\n' \
     > "${repo}/items/9.json"
-  bash "${repo}/ci/site.sh" "${out}" 2> "${WORK}/builds-err" || fail "the build failed: $(cat "${WORK}/builds-err")"
+  bash "${repo}/ci/site.sh" "${out}" "${WORK}/workshop.json" 2> "${WORK}/builds-err" || fail "the build failed: $(cat "${WORK}/builds-err")"
   expect_eq "$(cat "${WORK}/builds-err")" "$(printf '%s\n' \
     'Warning: item 5 has a folder name no folder can have, so the builds leave it out' \
     'Warning: item 6 has a folder name no folder can have, so the builds leave it out' \
@@ -825,7 +903,8 @@ JSON
   expect_eq "$(jq -c '[.gameVersion, [.items[].id]]' "${out}/build-41.json" "${out}/build-42.json")" \
     "$(printf '%s\n' '["41.78.21",["7","20","100"]]' '["42.21.0",["7","20","100"]]')"
   expect_eq "$(jq -c '.items[0]' "${out}/build-42.json")" \
-    '{"id":"7","title":"Town Pack","timeUpdated":1690000000,"mods":[{"folder":"Old","id":"OldMod","name":"Old","versionFolder":null,"loads":false,"error":"no mod.info for this game version","require":[],"incompatible":[],"zoneLoader":null,"maps":[]},{"folder":"Town","id":"TownMod","name":"Town","versionFolder":"42","loads":true,"error":"its require= has spaces around Other","require":["TilePack","Other"],"incompatible":["Rival"],"zoneLoader":false,"maps":[0,1]}]}'
+    '{"id":"7","title":"Town Pack","timeUpdated":1690000000,"workshop":{"subscribers":9,"requires":["13"]},"mods":[{"folder":"Old","id":"OldMod","name":"Old","versionFolder":null,"loads":false,"error":"no mod.info for this game version","require":[],"incompatible":[],"zoneLoader":null,"maps":[]},{"folder":"Town","id":"TownMod","name":"Town","versionFolder":"42","loads":true,"error":"its require= has spaces around Other","require":["TilePack","Other"],"incompatible":["Rival"],"zoneLoader":false,"maps":[0,1]}]}'
+  expect_eq "$(jq -c '[.items[1:][].workshop]' "${out}/build-42.json")" '[null,null]'
   expect_eq "$(jq -c '[.items[1:][].mods[] | [.folder, .name, .versionFolder, .loads, .zoneLoader, .maps]]' "${out}/build-42.json")" \
     '[["Next",null,"42",true,null,[2]],["Fork","Fork","42",true,true,[3]]]'
   expect_eq "$(jq -c '.maps[]' "${out}/build-42.json")" "$(printf '%s\n' \
@@ -846,16 +925,16 @@ JSON
   # Titles come from Translate/EN/<map>.json from 42.20 on.
   rm "${repo}/vanilla/41.json"
   vanilla 42 42.19.5 42.19
-  bash "${repo}/ci/site.sh" "${WORK}/builds-4219" 2> /dev/null || fail "the build failed for 42.19"
-  expect_eq "$(ls "${WORK}/builds-4219" | paste -sd ' ')" "build-42.json grid-1.js index.json"
+  bash "${repo}/ci/site.sh" "${WORK}/builds-4219" "${WORK}/workshop.json" 2> /dev/null || fail "the build failed for 42.19"
+  expect_eq "$(ls "${WORK}/builds-4219" | paste -sd ' ')" "build-42.json grid-1.js index.json workshop.json"
   expect_eq "$(jq -c '[.maps[].title]' "${WORK}/builds-4219/build-42.json")" '[null,"Town 42 TXT","Next TXT",null]'
   vanilla 42 42.20 unstable
-  bash "${repo}/ci/site.sh" "${WORK}/builds-4220" 2> /dev/null || fail "the build failed for 42.20"
+  bash "${repo}/ci/site.sh" "${WORK}/builds-4220" "${WORK}/workshop.json" 2> /dev/null || fail "the build failed for 42.20"
   expect_eq "$(jq -c '[.maps[].title]' "${WORK}/builds-4220/build-42.json")" '[null,"Town JSON","Next",null]'
   # A version of another build, or none, stops the build.
   for version in 41.78.21 42 420.1; do
     vanilla 42 "${version}" public
-    bash "${repo}/ci/site.sh" "${WORK}/builds-bad" 2> "${WORK}/builds-err" && fail "the build passed with Build 42 at ${version}"
+    bash "${repo}/ci/site.sh" "${WORK}/builds-bad" "${WORK}/workshop.json" 2> "${WORK}/builds-err" && fail "the build passed with Build 42 at ${version}"
     expect_eq "$(cat "${WORK}/builds-err")" "vanilla/42.json has the version ${version}, which is not one of Build 42"
   done
 }
@@ -865,7 +944,7 @@ test_grid() {
   node "${REPO}/test/grid.mjs" || fail "the grid tests failed"
 }
 
-for t in test_request test_freshness test_index_item test_work test_worker_run test_serve test_vanilla test_library test_discover test_site test_builds test_grid; do
+for t in test_request test_freshness test_index_item test_work test_worker_run test_serve test_vanilla test_library test_discover test_workshop test_site test_builds test_grid; do
   ("${t}"; exit "${FAILED}") || FAILED=1
 done
 if [ "${FAILED}" = 0 ]; then echo "Tests passed"; else echo "Tests failed"; exit 1; fi

@@ -22,7 +22,7 @@ if ! details="$(installed_items "${acf}" | cut -f 1 | steam_details)"; then
 fi
 mapfile -t candidates < <(
   while IFS= read -r item; do
-    [ -n "${item}" ] && [ -z "$(item_problem <<< "${item}")" ] || continue
+    [ -n "${item}" ] && [ -z "$(item_problem <<< "${item}")" ] && is_map <<< "${item}" || continue
     id="$(jq -r '.publishedfileid' <<< "${item}")"
     [ ! -f "items/${id}.json" ] && [ -z "$(queued_in "${id}" <<< "${queued}")" ] || continue
     jq -r '[.title, .publishedfileid, ((.file_size | tonumber) / 1048576 | ceil)] | @tsv' <<< "${item}"

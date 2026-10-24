@@ -4,7 +4,7 @@ An index of Project Zomboid maps on the Steam Workshop: which cells each map cov
 
 ## Asking for a map
 
-Open an issue with the **Add a map** form and give the map's Workshop link or ID. A check confirms that the item is a Project Zomboid item tagged Map on the Workshop and queues it, or closes the issue with the reason. The issue closes when the index has the map.
+Open an issue with the **Add a map** form and give the map's Workshop link or ID. A check confirms that the item is a Project Zomboid item tagged Map on the Workshop, or one that an item in the index requires there, such as a tile pack, and queues it, or closes the issue with the reason. The issue closes when the index has the item.
 
 ## Updates
 
@@ -12,9 +12,9 @@ Once a day a check asks the Workshop which maps in the index changed or were rem
 
 Once a week a check installs the game's dedicated server from each of its Steam branches for Build 41 and Build 42 and reads which version it is and which cells the game's own maps cover.
 
-## Popular maps
+## Required items and popular maps
 
-Once a day a check also queues the most subscribed maps on the Workshop that the index doesn't have yet, a few at a time.
+Once a day a check also queues, a few at a time, what the index doesn't have yet: first the items that its items require on the Workshop, such as tile packs, so it knows which item provides each mod a map needs, then the most subscribed maps on the Workshop.
 
 ## How it works
 
@@ -24,11 +24,13 @@ The checks run on GitHub Actions and only read public information from the Works
 
 The repository's GitHub Pages publish the whole index as `index.json`, `{"items": [...]}` with every entry of `items/` by Workshop ID, and the grid script as `grid-1.js`: an ES module that works out which maps are on each cell in `Map=` order and draws the cells on a canvas, for pages that show maps. A change to how pages call it comes as `grid-2.js`.
 
+`workshop.json` has the Workshop's figures of each item by Workshop ID, read every day: `subscribers` and `favorites` now and their `lifetimeSubscribers` and `lifetimeFavorites`, unique `visitors`, `votesUp`, `votesDown` and Steam's `score` from them, public `comments`, `fileSize` in bytes, `timeCreated` and `timeUpdated`, the `preview` image and the Workshop IDs it `requires`. A value Steam doesn't give is `null`; an item Steam no longer has is left out.
+
 `build-41.json` and `build-42.json` say what of each item the current version of that build loads, as the game reads the mods' `mod.info` files:
 
 - `gameVersion`: the version.
 - `vanilla`: the game's own map folders, with their `name` and `cells`.
-- `items`: by Workshop ID, with `id`, `title`, `timeUpdated` and `mods`, one per mod folder with a `mod.info`:
+- `items`: by Workshop ID, with `id`, `title`, `timeUpdated`, `workshop` (its figures from `workshop.json`, or `null`) and `mods`, one per mod folder with a `mod.info`:
   - `folder`, and `id` and `name` from the `mod.info` the game reads.
   - `versionFolder`: the folder its files come from besides `common/`, `""` for the mod folder itself, `null` when the game doesn't find the mod on this version.
   - `loads`, and `error`: why the game doesn't find or load the mod or, for one that loads, why it doesn't load what it requires by itself. When a mod doesn't load and has no error, its `versionMin` or `versionMax` keeps it out.

@@ -3,6 +3,8 @@
 # of the index and of a Steam library, and the issues that queue work for the worker.
 
 STEAM_DETAILS=https://api.steampowered.com/ISteamRemoteStorage/GetPublishedFileDetails/v1/
+# The same with a Web API key, and with the items each requires and its votes.
+STEAM_FULL_DETAILS=https://api.steampowered.com/IPublishedFileService/GetDetails/v1/
 # Project Zomboid's app on the Workshop.
 WORKSHOP_APP=108600
 # The version of the index entries' format; entries of an older one are read again.
@@ -25,14 +27,53 @@ steam_details() {
 }
 
 item_problem() {
-  # stdin = Steam's details of one item. Prints why the index can't have it: "missing", "app", "banned" or
-  # "tag", or nothing.
+  # stdin = Steam's details of one item. Prints why the index can't have it: "missing", "app" or "banned", or
+  # nothing.
   jq -r --argjson app "${WORKSHOP_APP}" '
     if .result != 1 then "missing"
     elif .consumer_app_id != $app then "app"
     elif (.banned // 0) != 0 then "banned"
-    elif any(.tags[]?; .tag == "Map") | not then "tag"
     else empty end'
+}
+
+is_map() {
+  # stdin = Steam's details of one item. True when the Workshop has it tagged Map.
+  jq -e 'any(.tags[]?; .tag == "Map")' > /dev/null
+}
+
+full_details() {
+  # stdin = workshop IDs, one per line. Prints Steam's details of each with the items it requires (children) and its
+  # votes, read with the Web API key in STEAM_API_KEY, as one JSON line; fails without a key, when Steam can't be
+  # reached or when it leaves an item out.
+  local i response
+  local -a batch=() args=()
+  if [ -z "${STEAM_API_KEY:-}" ]; then
+    echo "STEAM_API_KEY is empty: add a Steam Web API key as the repository secret STEAM_API_KEY" >&2
+    return 1
+  fi
+  while mapfile -t -n 100 batch && [ "${#batch[@]}" -gt 0 ]; do
+    args=()
+    for i in "${!batch[@]}"; do
+      args+=(--data-urlencode "publishedfileids[$i]=${batch[$i]}")
+    done
+    response="$(curl -fsS --max-time 30 -G --data-urlencode "key=${STEAM_API_KEY}" --data-urlencode includechildren=true \
+      --data-urlencode includevotes=true "${args[@]}" "${STEAM_FULL_DETAILS}")" || return 1
+    jq -ce --argjson count "${#batch[@]}" '.response.publishedfiledetails | select(length == $count) | .[]' <<< "${response}" \
+      2> /dev/null || return 1
+  done
+}
+
+required_items() {
+  # stdin = full_details lines. Prints "<item>\t<item it requires>" for each item that the Workshop says each requires.
+  jq -r '.publishedfileid as $id | .children[]? | [$id, .publishedfileid] | @tsv'
+}
+
+indexed_ids() {
+  # Prints the Workshop IDs of the items in the index.
+  local file
+  for file in items/*.json; do
+    [ ! -f "${file}" ] || jq -r '.id' "${file}"
+  done
 }
 
 cell_runs() {

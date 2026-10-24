@@ -1,13 +1,15 @@
 #!/bin/bash
 # Builds the site in the folder $1: index.json, every entry of items/ by Workshop ID as {"items": [...]}, the grid
-# script as grid-<major version>.js, and for each build of the game in vanilla/ build-<major version>.json: what of
-# each item loads on the version read there, which of those maps share cells, and the game's own maps.
+# script as grid-<major version>.js, workshop.json, the Workshop's figures of the items as workshop.sh printed them to
+# the file $2, and for each build of the game in vanilla/ build-<major version>.json: what of each item loads on the
+# version read there, with its figures, which of those maps share cells, and the game's own maps.
 set -euo pipefail
+out="$(realpath -m "${1:?usage: site.sh <folder> <workshop figures>}")"
+workshop="$(realpath "${2:?usage: site.sh <folder> <workshop figures>}")"
 cd "$(dirname "$0")/.."
 # shellcheck source=ci/mod_info.sh
 . ci/mod_info.sh
 
-out="${1:?usage: site.sh <folder>}"
 shopt -s nullglob
 games=(vanilla/*.json)
 versions=()
@@ -35,6 +37,7 @@ else
   echo '{"items":[]}' > "${out}/index.json"
 fi
 cp site/grid.js "${out}/grid-${major}.js"
+jq -c . "${workshop}" > "${out}/workshop.json"
 
 # The entries' mod.info files at <id>/mods/<folder>/<path>, for the game's rules to read. Entries of the first format
 # have none. A folder name no folder can have would put them elsewhere, and the reader takes tabs and line breaks for
@@ -61,7 +64,7 @@ done
 # the first with map.info its title, which the English translation of the file the version reads replaces.
 for i in "${!games[@]}"; do
   mod_info_rows "${versions[$i]}" "${tmp}/items"/*/mods > "${tmp}/rows"
-  jq -s -c --arg version "${versions[$i]}" --rawfile rows "${tmp}/rows" --slurpfile game "${games[$i]}" '
+  jq -s -c --arg version "${versions[$i]}" --rawfile rows "${tmp}/rows" --slurpfile game "${games[$i]}" --slurpfile workshop "${workshop}" '
     def first_of(f): [f] | if length > 0 then .[0] else null end;
     def text: if . == "" then null else . end;
     # Build 42.20 and later read Translate/EN/<map>.json, earlier versions <map>/title.txt (42.14 to 42.19 are not
@@ -93,7 +96,7 @@ for i in "${!games[@]}"; do
     | (reduce $mods[] as $mod ({mods: [], at: 0}; .mods += [$mod + {maps: [range(.at; .at + ($mod.maps | length))]}] | .at += ($mod.maps | length))
       | .mods | group_by(.item) | map({key: .[0].item, value: map(del(.item))}) | from_entries) as $item_mods
     | {gameVersion: $version, vanilla: $game[0].maps,
-       items: map({id, title, timeUpdated, mods: ($item_mods[.id] // [])}),
+       items: map({id, title, timeUpdated, workshop: $workshop[0][.id], mods: ($item_mods[.id] // [])}),
        maps: $maps,
        conflicts: ([$maps | to_entries[] | .key as $at | .value.cells[] | .[0] as $y | range(.[1]; .[2] + 1) | [., $y, $at]]
          | group_by(.[0:2]) | map(map(.[2]) | . as $here | range(0; length) as $a | range($a + 1; length) as $b | [$here[$a], $here[$b]])
