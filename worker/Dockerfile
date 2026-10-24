@@ -11,8 +11,8 @@ RUN apt-get update \
   && rm -rf /var/lib/apt/lists/*
 
 # Created here so a new named volume starts out owned by the steam user.
-RUN mkdir -p /cache /items /repo \
-  && chown "${USER}:${USER}" /cache /items /repo
+RUN mkdir -p /cache /items /keys /repo \
+  && chown "${USER}:${USER}" /cache /items /keys /repo
 
 # Docker 29's default seccomp profile refuses the sockets of 32-bit programs, and SteamCMD is one until it updates
 # itself to Valve's 64-bit build. So it updates here, as the base image's 32-bit build, and STEAM_PLATFORM makes

@@ -436,7 +436,7 @@ EOF
 }
 
 # The service, stopped by the fake sleep after its first round. work.sh is a fake that writes 123 and plans it and 456,
-# which is unchanged, and logs the items folder it gets and the key ssh would use, with its mode and text.
+# which is unchanged, and logs the items folder it gets and the key ssh would use, with its mode and first line.
 test_serve() {
   TEST=serve
   local remote="${WORK}/serve-remote.git" seed="${WORK}/serve-seed" worker="${WORK}/serve-worker" clone="${WORK}/serve-clone"
@@ -452,7 +452,7 @@ test_serve() {
   cat > "${worker}/work.sh" <<'EOF'
 #!/bin/bash
 key="${GIT_SSH_COMMAND#ssh -i }"
-printf '%s|%s|%s\n' "${ITEMS_DIR}" "${GIT_SSH_COMMAND:-}" "$([ -z "${GIT_SSH_COMMAND:-}" ] || echo "$(stat -c %a "${key%% *}") $(cat "${key%% *}")")" \
+printf '%s|%s|%s\n' "${ITEMS_DIR}" "${GIT_SSH_COMMAND:-}" "$([ -z "${GIT_SSH_COMMAND:-}" ] || echo "$(stat -c %a "${key%% *}") $(head -n 1 "${key%% *}")")" \
   >> "${WORK}/work-calls"
 printf '{"id": "123"}\n' > "${ITEMS_DIR}/123.json"
 printf '%s\n' "1	add	123	Town Pack	done" "2	update	456	Same	done"
@@ -483,10 +483,11 @@ EOF
   git -C "${clone}" add --all
   git -C "${clone}" commit --quiet -m local
   printf 'stray\n' > "${clone}/stray"
-  printf 'KEY\n' > "${WORK}/deploy-key"
+  ssh-keygen -q -t ed25519 -N '' -f "${WORK}/deploy-key"
   chmod 644 "${WORK}/deploy-key"
   REMOTE="${remote}" INTERVAL=30m DEPLOY_KEY="${WORK}/deploy-key" CACHE_DIR="${WORK}/serve-cache" serve
-  expect_eq "$(cat "${WORK}/serve-out")" "$(printf '%s\n' 'Working through the queued requests' '#1 Town Pack: unchanged' '#2 Same: unchanged')"
+  expect_eq "$(cat "${WORK}/serve-out")" "$(printf '%s\n' "Deploy key: $(cat "${WORK}/deploy-key.pub")" \
+    'Working through the queued requests' '#1 Town Pack: unchanged' '#2 Same: unchanged')"
   expect_eq "$(git -C "${clone}" log --format=%s | paste -sd ' ')" 'elsewhere data: add Town Pack (123) start'
   expect_eq "$(git -C "${clone}" remote get-url origin)" "${remote}"
   expect_eq "$(ls -A "${clone}" | paste -sd ' ')" '.git items'
@@ -494,9 +495,14 @@ EOF
   local key
   key="$(sed -n 's/^[^|]*|ssh -i \([^ ]*\) .*/\1/p' "${WORK}/work-calls")"
   expect_eq "$(cat "${WORK}/work-calls")" \
-    "${clone}/items|ssh -i ${key} -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=${WORK}/serve-cache/known_hosts|600 KEY"
+    "${clone}/items|ssh -i ${key} -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=${WORK}/serve-cache/known_hosts|600 $(head -n 1 "${WORK}/deploy-key")"
   [ -e "${key}" ] && fail "serve.sh left its copy of the key"
   expect_eq "$(cat "${WORK}/sleep-calls")" 30m
+  # Without a key, it makes one.
+  mkdir -p "${WORK}/keys"
+  REMOTE="${remote}" DEPLOY_KEY="${WORK}/keys/new" serve
+  expect_eq "$(head -n 1 "${WORK}/serve-out")" "Deploy key: $(cat "${WORK}/keys/new.pub")"
+  expect_eq "$(sed -n 2p "${WORK}/serve-out")" 'Working through the queued requests'
   # A round that fails waits for the next, as the remote may be back by then.
   rm -rf "${clone}"
   REMOTE="${WORK}/missing.git" INTERVAL=30m serve
