@@ -53,19 +53,22 @@ details() {
 }
 RAVEN="$(details 3484263516 "Raven Creek B42" 1789883053)"
 
-# Runs the request check on an issue: $1 = body, $2 = number, $3 = state, $4 = title, $5 = labels (comma separated).
+# Runs the request check, from a copy with an index of its own (${WORK}/request/items), on an issue: $1 = body,
+# $2 = number, $3 = state, $4 = title, $5 = labels (comma separated).
 request() {
   jq -n --arg body "$1" --argjson number "${2:-9}" --arg state "${3:-open}" --arg title "${4:-Add a map}" --arg labels "${5-add}" \
     '{issue: {number: $number, state: $state, title: $title, body: $body, labels: ($labels | split(",") | map(select(length > 0) | {name: .}))}}' \
     > "${WORK}/event.json"
   rm -f "${WORK}/gh-calls"
-  GITHUB_EVENT_PATH="${WORK}/event.json" bash "${REPO}/ci/request.sh"
+  GITHUB_EVENT_PATH="${WORK}/event.json" bash "${WORK}/request/ci/request.sh"
 }
 calls() { cat "${WORK}/gh-calls" 2> /dev/null; }
 form() { printf '### Workshop item\n\n%s\n' "$1"; }
 
 test_request() {
   TEST=request
+  mkdir -p "${WORK}/request/items"
+  cp -r "${REPO}/ci" "${WORK}/request/"
   export FAKE_ITEMS
   FAKE_ITEMS="$(jq -n -c --argjson raven "${RAVEN}" --argjson other "$(details 111 "Other App" 1 999)" \
     --argjson banned "$(details 222 "Banned Map" 1 108600 1)" --argjson untagged "$(details 333 "Not a Map" 1 108600 0 "Build 42,Items")" \
@@ -115,18 +118,12 @@ issue | close | 9 | --reason | not planned"
 issue | list | --state | open | --limit | 1000 | --json | number,title"
 
   # In the index: current, or older than the Workshop's.
-  mkdir -p "${WORK}/repo"
-  cp -r "${REPO}/ci" "${WORK}/repo/"
-  mkdir -p "${WORK}/repo/items"
-  printf '{"id": "3484263516", "title": "Raven Creek B42", "timeUpdated": 1789883053}\n' > "${WORK}/repo/items/3484263516.json"
-  jq -n --arg body "$(form 3484263516)" '{issue: {number: 9, state: "open", title: "Add a map", body: $body, labels: [{name: "add"}]}}' > "${WORK}/event.json"
-  rm -f "${WORK}/gh-calls"
-  GITHUB_EVENT_PATH="${WORK}/event.json" bash "${WORK}/repo/ci/request.sh"
+  printf '{"id": "3484263516", "title": "Raven Creek B42", "timeUpdated": 1789883053}\n' > "${WORK}/request/items/3484263516.json"
+  request "$(form 3484263516)"
   expect_eq "$(calls | tail -n 2)" "issue | comment | 9 | --body | Raven Creek B42 is in the index already, from its update of $(date -u -d @1789883053 +%Y-%m-%d).
 issue | close | 9 | --reason | completed"
-  printf '{"id": "3484263516", "title": "Raven Creek B42", "timeUpdated": 1700000000}\n' > "${WORK}/repo/items/3484263516.json"
-  rm -f "${WORK}/gh-calls"
-  GITHUB_EVENT_PATH="${WORK}/event.json" bash "${WORK}/repo/ci/request.sh"
+  printf '{"id": "3484263516", "title": "Raven Creek B42", "timeUpdated": 1700000000}\n' > "${WORK}/request/items/3484263516.json"
+  request "$(form 3484263516)"
   expect_eq "$(calls | tail -n 2)" "issue | edit | 9 | --title | Update Raven Creek B42 (3484263516) | --add-label | update,ready | --remove-label | add
 issue | comment | 9 | --body | Queued: the index has Raven Creek B42 from its update of $(date -u -d @1700000000 +%Y-%m-%d); it changed on $(date -u -d @1789883053 +%Y-%m-%d). This issue closes when the index has it."
 
