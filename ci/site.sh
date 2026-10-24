@@ -1,25 +1,23 @@
 #!/bin/bash
 # Builds the site in the folder $1: index.json, every entry of items/ by Workshop ID as {"items": [...]}, the grid
-# script as grid-<major version>.js, and for each game version in GAME_VERSIONS build-<major version>.json: what of
-# each item loads on that version, and which of those maps share cells.
+# script as grid-<major version>.js, and for each build of the game in vanilla/ build-<major version>.json: what of
+# each item loads on the version read there, which of those maps share cells, and the game's own maps.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 # shellcheck source=ci/mod_info.sh
 . ci/mod_info.sh
 
 out="${1:?usage: site.sh <folder>}"
-read -r -a versions <<< "${GAME_VERSIONS:?}"
-majors=()
-for version in "${versions[@]}"; do
-  if ! [[ "${version}" =~ ^([0-9]+)\.[0-9]+ ]]; then
-    echo "GAME_VERSIONS has ${version}, which is not a game version like 42.21.0" >&2
+shopt -s nullglob
+games=(vanilla/*.json)
+versions=()
+for game in "${games[@]}"; do
+  build="$(basename "${game}" .json)"
+  versions+=("$(jq -r '.gameVersion' "${game}")")
+  if ! [[ "${versions[-1]}" =~ ^${build}\.[0-9]+ ]]; then
+    echo "${game} has the version ${versions[-1]}, which is not one of Build ${build}" >&2
     exit 1
   fi
-  if [[ " ${majors[*]} " == *" ${BASH_REMATCH[1]} "* ]]; then
-    echo "GAME_VERSIONS has more than one version of Build ${BASH_REMATCH[1]}" >&2
-    exit 1
-  fi
-  majors+=("${BASH_REMATCH[1]}")
 done
 major="$(sed -n "s/^export const VERSION = '\([0-9][0-9]*\)\.[0-9][0-9]*\.[0-9][0-9]*';$/\1/p" site/grid.js)"
 if [ -z "${major}" ]; then
@@ -30,7 +28,6 @@ fi
 mkdir -p "${out}"
 tmp="$(mktemp -d)"
 trap 'rm -rf "${tmp}"' EXIT
-shopt -s nullglob
 files=(items/*.json)
 if [ "${#files[@]}" -gt 0 ]; then
   jq -c -s 'sort_by(.id | tonumber) | {items: .}' "${files[@]}" > "${out}/index.json"
@@ -62,9 +59,9 @@ done
 # Of the folders a mod that loads reads (its version folder, then common/), the first with a map gives the map's
 # cells, the first with a zone file where that file's zones stop, the first with spawnpoints.lua its spawn points and
 # the first with map.info its title, which the English translation of the file the version reads replaces.
-for i in "${!versions[@]}"; do
+for i in "${!games[@]}"; do
   mod_info_rows "${versions[$i]}" "${tmp}/items"/*/mods > "${tmp}/rows"
-  jq -s -c --arg version "${versions[$i]}" --rawfile rows "${tmp}/rows" '
+  jq -s -c --arg version "${versions[$i]}" --rawfile rows "${tmp}/rows" --slurpfile game "${games[$i]}" '
     def first_of(f): [f] | if length > 0 then .[0] else null end;
     def text: if . == "" then null else . end;
     # Build 42.20 and later read Translate/EN/<map>.json, earlier versions <map>/title.txt (42.14 to 42.19 are not
@@ -95,12 +92,12 @@ for i in "${!versions[@]}"; do
     # Each mod lists its maps by their place in maps.
     | (reduce $mods[] as $mod ({mods: [], at: 0}; .mods += [$mod + {maps: [range(.at; .at + ($mod.maps | length))]}] | .at += ($mod.maps | length))
       | .mods | group_by(.item) | map({key: .[0].item, value: map(del(.item))}) | from_entries) as $item_mods
-    | {gameVersion: $version,
+    | {gameVersion: $version, vanilla: $game[0].maps,
        items: map({id, title, timeUpdated, mods: ($item_mods[.id] // [])}),
        maps: $maps,
        conflicts: ([$maps | to_entries[] | .key as $at | .value.cells[] | .[0] as $y | range(.[1]; .[2] + 1) | [., $y, $at]]
          | group_by(.[0:2]) | map(map(.[2]) | . as $here | range(0; length) as $a | range($a + 1; length) as $b | [$here[$a], $here[$b]])
          | group_by(.) | map(.[0] + [length])),
        providers: ([$mods[] | select(.loads)] | group_by(.id) | map({key: .[0].id, value: (map(.item) | unique | sort_by(tonumber))})
-         | from_entries)}' "${tmp}/entries" > "${out}/build-${majors[$i]}.json"
+         | from_entries)}' "${tmp}/entries" > "${out}/build-$(basename "${games[$i]}" .json).json"
 done

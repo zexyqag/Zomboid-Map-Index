@@ -3,7 +3,7 @@ name: Pages
 on:
   push:
     branches: [main]
-    paths: ['items/**', 'site/**', 'ci/site.sh', 'ci/mod_info.sh', '.github/workflows/pages.yml']
+    paths: ['items/**', 'vanilla/**', 'site/**', 'ci/site.sh', 'ci/mod_info.sh', '.github/workflows/pages.yml']
   workflow_dispatch:
 
 permissions:
@@ -30,8 +30,6 @@ jobs:
 
       - name: Build the site
         run: bash ci/site.sh _site
-        env:
-          GAME_VERSIONS: ${{ vars.GAME_VERSIONS || '41.78.16 42.21.0' }}
 
       # A re-run keeps the artifacts of earlier attempts, and deploy-pages refuses two with one name.
       - name: Upload Pages artifact

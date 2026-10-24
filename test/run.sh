@@ -70,13 +70,15 @@ EOF
 chmod +x "${WORK}/bin/curl" "${WORK}/bin/gh" "${WORK}/bin/sleep"
 export WORK PATH="${WORK}/bin:${PATH}"
 
-# The room reader, built as the worker image builds it.
+# The room and version readers, built as the worker image builds them.
 if ! javac -Xlint:all,-serial -Werror -d "${WORK}/rooms" "${REPO}/worker/ReadSpawnRooms.java" \
-  || ! jar --create --file "${WORK}/read_spawn_rooms.jar" --main-class ReadSpawnRooms -C "${WORK}/rooms" .; then
-  echo "The room reader did not compile (the tests need a JDK)" >&2
+  || ! jar --create --file "${WORK}/read_spawn_rooms.jar" --main-class ReadSpawnRooms -C "${WORK}/rooms" . \
+  || ! javac -Xlint:all,-serial -Werror -d "${WORK}/version" "${REPO}/worker/ReadGameVersion.java" \
+  || ! jar --create --file "${WORK}/read_game_version.jar" --main-class ReadGameVersion -C "${WORK}/version" .; then
+  echo "The readers did not compile (the tests need a JDK)" >&2
   exit 1
 fi
-export ROOMS_READER="${WORK}/read_spawn_rooms.jar"
+export ROOMS_READER="${WORK}/read_spawn_rooms.jar" VERSION_READER="${WORK}/read_game_version.jar"
 
 # Writes a cell header the way the game's map tools do: $1 = file, $2 = 42 (version 1, with the magic),
 # 42.0 (version 0, without) or 41, then one argument per room, "room <name> <level> <objects> <x> <y> <w> <h>...",
@@ -517,6 +519,77 @@ EOF
   grep -q "git@github.com git-upload-pack 'owner/index.git'" "${WORK}/ssh-calls" || fail "serve.sh did not clone from GitHub: $(cat "${WORK}/ssh-calls")"
 }
 
+# The game's own maps, from a fake SteamCMD that installs a fake game: public is Build 42.21.0 with its classes in the
+# game's jar, legacy41 Build 41.78.21 with them loose under java/, and unstable Build 42.22.0. It fails for any other
+# branch, and for all with FAKE_STEAMCMD_FAIL.
+test_vanilla() {
+  TEST=vanilla
+  local dir="${WORK}/vanilla" out
+  # java would announce it on stderr.
+  unset JAVA_TOOL_OPTIONS
+  mkdir -p "${dir}/steamcmd" "${dir}/cache" "${dir}/src"
+  printf '%s\n' 'package zombie.core;' 'public final class GameVersion {' '  public GameVersion(int major, int minor, String suffix) {}' '}' > "${dir}/src/GameVersion.java"
+  for version in 42.21.0 41.78.21 42.22.0; do
+    IFS=. read -r major minor build <<< "${version}"
+    printf '%s\n' 'package zombie.core;' 'public final class Core {' \
+      "  private static final GameVersion gameVersion = new GameVersion(${major}, ${minor}, \"\");" \
+      "  private static final int buildVersion = ${build};" '}' > "${dir}/src/Core.java"
+    javac -d "${dir}/classes-${version}" "${dir}/src/GameVersion.java" "${dir}/src/Core.java" 2> /dev/null || { fail "the fake game did not compile"; return; }
+  done
+  cat > "${dir}/steamcmd/steamcmd.sh" <<'EOF'
+#!/bin/bash
+printf '%s\n' "$*" >> "${WORK}/steamcmd-calls"
+[ -z "${FAKE_STEAMCMD_FAIL:-}" ] || { echo "ERROR! Failed to install app '380870' (No subscription)"; exit 0; }
+game="$2" classes="${WORK}/vanilla/classes"
+case "$*" in
+  *'-beta legacy41 '*) version=41.78.21 ;;
+  *'-beta unstable '*) version=42.22.0 ;;
+  *'-beta '*) echo "ERROR! Failed to install app '380870' (Invalid platform)"; exit 0 ;;
+  *) version=42.21.0 ;;
+esac
+mkdir -p "${game}/java" "${game}/media/maps/Muldraugh, KY" "${game}/media/maps/Riverside, KY"
+if [ "${version}" = 41.78.21 ]; then
+  cp -r "${classes}-${version}/zombie" "${game}/java/"
+  printf '{"classpath": ["java/.", "java/trove.jar"]}\n' > "${game}/ProjectZomboid64.json"
+  touch "${game}/media/maps/Muldraugh, KY/"{1_1,2_1,4_1}.lotheader
+else
+  jar --create --file "${game}/java/projectzomboid.jar" -C "${classes}-${version}" .
+  printf '{"classpath": ["java/projectzomboid.jar"]}\n' > "${game}/ProjectZomboid64.json"
+  touch "${game}/media/maps/Muldraugh, KY/"{9_5,10_5,11_5,10_6}.lotheader
+fi
+touch "${game}/media/maps/Riverside, KY/spawnpoints.lua"
+echo "Success! App '380870' fully installed."
+EOF
+  chmod +x "${dir}/steamcmd/steamcmd.sh"
+  vanilla() {
+    rm -f "${WORK}/steamcmd-calls"
+    CACHE_DIR="${dir}/cache" STEAMCMDDIR="${dir}/steamcmd" bash "${REPO}/worker/vanilla.sh" "$@" 2> "${WORK}/vanilla-err"
+  }
+  out="$(vanilla public legacy41)" || fail "vanilla.sh failed: $(cat "${WORK}/vanilla-err")"
+  expect_eq "${out}" '{"42":{"gameVersion":"42.21.0","branch":"public","maps":[{"name":"Muldraugh, KY","cells":[[5,9,11],[6,10,10]]},{"name":"Riverside, KY","cells":[]}]},"41":{"gameVersion":"41.78.21","branch":"legacy41","maps":[{"name":"Muldraugh, KY","cells":[[1,1,2],[1,4,4]]},{"name":"Riverside, KY","cells":[]}]}}'
+  expect_eq "$(sed "s#${dir}/cache/game\.[A-Za-z0-9]*#<game>#" "${WORK}/steamcmd-calls")" "$(printf '%s\n' \
+    '+force_install_dir <game> +login anonymous +app_update 380870 validate +quit' \
+    '+force_install_dir <game> +login anonymous +app_update 380870 -beta legacy41 validate +quit')"
+  expect_eq "$(ls -A "${dir}/cache")" ''
+  # Two branches of one build, and a branch SteamCMD can't install.
+  vanilla public unstable > /dev/null && fail "vanilla.sh took two branches of Build 42"
+  expect_eq "$(cat "${WORK}/vanilla-err")" 'The public and unstable branches are both Build 42'
+  rm -f "${WORK}/sleep-calls"
+  vanilla public 41.78.16 > /dev/null && fail "vanilla.sh passed without the 41.78.16 branch"
+  expect_eq "$(cat "${WORK}/vanilla-err")" "$(printf '%s\n' \
+    "SteamCMD could not install the 41.78.16 branch (attempt 1): ERROR! Failed to install app '380870' (Invalid platform)" \
+    "SteamCMD could not install the 41.78.16 branch (attempt 2): ERROR! Failed to install app '380870' (Invalid platform)" \
+    "SteamCMD could not install the 41.78.16 branch (attempt 3): ERROR! Failed to install app '380870' (Invalid platform)" \
+    'The 41.78.16 branch could not be read')"
+  expect_eq "$(ls -A "${dir}/cache")" ''
+  # A game whose version can't be read.
+  rm -rf "${dir}/classes-42.21.0"
+  vanilla public > /dev/null 2>&1 && fail "vanilla.sh passed without the game's version"
+  expect_eq "$(tail -n 1 "${WORK}/vanilla-err")" 'The public branch could not be read'
+  vanilla > /dev/null && fail "vanilla.sh passed without a branch"
+  expect_eq "$(cat "${WORK}/vanilla-err")" 'usage: vanilla.sh <branch>...'
+}
+
 test_library() {
   TEST=library
   local remote="${WORK}/library-remote.git" clone="${WORK}/library-clone" library="${WORK}/library" out
@@ -656,11 +729,14 @@ test_site() {
   mkdir -p "${repo}/items" "${repo}/site"
   cp -r "${REPO}/ci" "${repo}/"
   cp "${REPO}/site/grid.js" "${repo}/site/"
-  export GAME_VERSIONS='41.78.16 42.21.0'
-  # Without entries, an empty index.
+  # Without entries, an empty index, and without vanilla/ no builds.
   bash "${repo}/ci/site.sh" "${WORK}/site-empty" || fail "the build failed without entries"
   expect_eq "$(cat "${WORK}/site-empty/index.json")" '{"items":[]}'
+  expect_eq "$(ls "${WORK}/site-empty" | paste -sd ' ')" "grid-1.js index.json"
   # The entries by Workshop ID as numbers; the licence and other files stay out.
+  mkdir -p "${repo}/vanilla"
+  printf '{"gameVersion": "41.78.21", "branch": "legacy41", "maps": []}\n' > "${repo}/vanilla/41.json"
+  printf '{"gameVersion": "42.21.0", "branch": "public", "maps": []}\n' > "${repo}/vanilla/42.json"
   printf '{"id": "20", "title": "Twenty"}\n' > "${repo}/items/20.json"
   printf '{"id": "3", "title": "Three"}\n' > "${repo}/items/3.json"
   cp "${REPO}/items/LICENSE" "${repo}/items/"
@@ -686,9 +762,16 @@ test_builds() {
   mkdir -p "${repo}/items" "${repo}/site"
   cp -r "${REPO}/ci" "${repo}/"
   cp "${REPO}/site/grid.js" "${repo}/site/"
-  export GAME_VERSIONS='41.78.16 42.21.0'
+  mkdir -p "${repo}/vanilla"
+  vanilla() {
+    # $1 = build, $2 = version, $3 = branch
+    printf '{"gameVersion": "%s", "branch": "%s", "maps": [{"name": "Muldraugh, KY", "cells": [[%s, 1, 2]]}, {"name": "Riverside, KY", "cells": []}]}\n' \
+      "$2" "$3" "$1" > "${repo}/vanilla/$1.json"
+  }
+  vanilla 41 41.78.21 legacy41
+  vanilla 42 42.21.0 public
   bash "${repo}/ci/site.sh" "${WORK}/builds-empty" || fail "the build failed without entries"
-  expect_eq "$(cat "${WORK}/builds-empty/build-42.json")" '{"gameVersion":"42.21.0","items":[],"maps":[],"conflicts":[],"providers":{}}'
+  expect_eq "$(cat "${WORK}/builds-empty/build-42.json")" '{"gameVersion":"42.21.0","vanilla":[{"name":"Muldraugh, KY","cells":[[42,1,2]]},{"name":"Riverside, KY","cells":[]}],"items":[],"maps":[],"conflicts":[],"providers":{}}'
   cat > "${repo}/items/7.json" <<'JSON'
 {"format": 2, "id": "7", "title": "Town Pack", "timeUpdated": 1690000000, "mods": [
   {"folder": "Town", "roots": [
@@ -740,7 +823,7 @@ JSON
     'Warning: item 8 has a folder name no folder can have, so the builds leave it out' \
     'Warning: item 9 has a folder name no folder can have, so the builds leave it out')"
   expect_eq "$(jq -c '[.gameVersion, [.items[].id]]' "${out}/build-41.json" "${out}/build-42.json")" \
-    "$(printf '%s\n' '["41.78.16",["7","20","100"]]' '["42.21.0",["7","20","100"]]')"
+    "$(printf '%s\n' '["41.78.21",["7","20","100"]]' '["42.21.0",["7","20","100"]]')"
   expect_eq "$(jq -c '.items[0]' "${out}/build-42.json")" \
     '{"id":"7","title":"Town Pack","timeUpdated":1690000000,"mods":[{"folder":"Old","id":"OldMod","name":"Old","versionFolder":null,"loads":false,"error":"no mod.info for this game version","require":[],"incompatible":[],"zoneLoader":null,"maps":[]},{"folder":"Town","id":"TownMod","name":"Town","versionFolder":"42","loads":true,"error":"its require= has spaces around Other","require":["TilePack","Other"],"incompatible":["Rival"],"zoneLoader":false,"maps":[0,1]}]}'
   expect_eq "$(jq -c '[.items[1:][].mods[] | [.folder, .name, .versionFolder, .loads, .zoneLoader, .maps]]' "${out}/build-42.json")" \
@@ -761,18 +844,20 @@ JSON
     '{"item":"20","folder":"Next","name":"Next","title":"Next 41","cells":[[1,2,3]],"spawns":null,"zones":{}}')"
   expect_eq "$(jq -c '[.conflicts, .providers]' "${out}/build-41.json")" '[[[0,1,1]],{"NextMod":["20"],"TownMod":["7"]}]'
   # Titles come from Translate/EN/<map>.json from 42.20 on.
-  GAME_VERSIONS=42.19.5 bash "${repo}/ci/site.sh" "${WORK}/builds-4219" 2> /dev/null || fail "the build failed for 42.19"
+  rm "${repo}/vanilla/41.json"
+  vanilla 42 42.19.5 42.19
+  bash "${repo}/ci/site.sh" "${WORK}/builds-4219" 2> /dev/null || fail "the build failed for 42.19"
   expect_eq "$(ls "${WORK}/builds-4219" | paste -sd ' ')" "build-42.json grid-1.js index.json"
   expect_eq "$(jq -c '[.maps[].title]' "${WORK}/builds-4219/build-42.json")" '[null,"Town 42 TXT","Next TXT",null]'
-  GAME_VERSIONS=42.20 bash "${repo}/ci/site.sh" "${WORK}/builds-4220" 2> /dev/null || fail "the build failed for 42.20"
+  vanilla 42 42.20 unstable
+  bash "${repo}/ci/site.sh" "${WORK}/builds-4220" 2> /dev/null || fail "the build failed for 42.20"
   expect_eq "$(jq -c '[.maps[].title]' "${WORK}/builds-4220/build-42.json")" '[null,"Town JSON","Next",null]'
-  for versions in '' 42 '42.13.0 42.21.0'; do
-    GAME_VERSIONS="${versions}" bash "${repo}/ci/site.sh" "${WORK}/builds-bad" 2> "${WORK}/builds-err" \
-      && fail "the build passed with GAME_VERSIONS '${versions}'"
+  # A version of another build, or none, stops the build.
+  for version in 41.78.21 42 420.1; do
+    vanilla 42 "${version}" public
+    bash "${repo}/ci/site.sh" "${WORK}/builds-bad" 2> "${WORK}/builds-err" && fail "the build passed with Build 42 at ${version}"
+    expect_eq "$(cat "${WORK}/builds-err")" "vanilla/42.json has the version ${version}, which is not one of Build 42"
   done
-  expect_eq "$(cat "${WORK}/builds-err")" 'GAME_VERSIONS has more than one version of Build 42'
-  GAME_VERSIONS=42 bash "${repo}/ci/site.sh" "${WORK}/builds-bad" 2> "${WORK}/builds-err"
-  expect_eq "$(cat "${WORK}/builds-err")" 'GAME_VERSIONS has 42, which is not a game version like 42.21.0'
 }
 
 test_grid() {
@@ -780,7 +865,7 @@ test_grid() {
   node "${REPO}/test/grid.mjs" || fail "the grid tests failed"
 }
 
-for t in test_request test_freshness test_index_item test_work test_worker_run test_serve test_library test_discover test_site test_builds test_grid; do
+for t in test_request test_freshness test_index_item test_work test_worker_run test_serve test_vanilla test_library test_discover test_site test_builds test_grid; do
   ("${t}"; exit "${FAILED}") || FAILED=1
 done
 if [ "${FAILED}" = 0 ]; then echo "Tests passed"; else echo "Tests failed"; exit 1; fi

@@ -1,0 +1,58 @@
+name: Vanilla
+
+on:
+  schedule:
+    - cron: '23 4 * * 1'
+  push:
+    branches: [main]
+    paths: ['worker/vanilla.sh', 'worker/ReadGameVersion.java', '.github/workflows/vanilla.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: vanilla
+  cancel-in-progress: false
+
+jobs:
+  read:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Build the worker image
+        run: docker build --file worker/Dockerfile --tag zomboid-map-index-worker .
+
+      - name: Read the game's own maps
+        run: |
+          docker run --rm --entrypoint /worker/worker/vanilla.sh zomboid-map-index-worker ${VANILLA_BRANCHES} > "${RUNNER_TEMP}/vanilla.json"
+          rm -rf vanilla
+          mkdir vanilla
+          for build in $(jq -r 'keys[]' "${RUNNER_TEMP}/vanilla.json"); do
+            jq -c --arg build "${build}" '.[$build]' "${RUNNER_TEMP}/vanilla.json" > "vanilla/${build}.json"
+          done
+        env:
+          VANILLA_BRANCHES: ${{ vars.VANILLA_BRANCHES || 'public legacy41' }}
+
+      # A push with this workflow's token starts no workflow, so this one starts the Pages build.
+      - name: Commit and publish
+        run: |
+          git add --all vanilla
+          if git diff --cached --quiet; then
+            echo "The game's own maps are as they were"
+            exit 0
+          fi
+          git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+            commit --quiet --message "data: the game's own maps ($(jq -r '.gameVersion' vanilla/*.json | paste -sd ' '))"
+          for attempt in 1 2 3; do
+            if git pull --rebase --quiet origin "${GITHUB_REF_NAME}" && git push --quiet origin "HEAD:${GITHUB_REF_NAME}"; then
+              gh workflow run pages.yml --ref "${GITHUB_REF_NAME}"
+              exit 0
+            fi
+          done
+          exit 1
+        env:
+          GH_TOKEN: ${{ github.token }}

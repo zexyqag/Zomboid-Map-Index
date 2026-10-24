@@ -1,7 +1,9 @@
-FROM eclipse-temurin:25-jdk AS rooms
-COPY worker/ReadSpawnRooms.java /src/
-RUN javac -Xlint:all,-serial -Werror -d /src/classes /src/ReadSpawnRooms.java \
-  && jar --create --file /src/read_spawn_rooms.jar --main-class ReadSpawnRooms -C /src/classes .
+FROM eclipse-temurin:25-jdk AS readers
+COPY worker/ReadGameVersion.java worker/ReadSpawnRooms.java /src/
+RUN javac -Xlint:all,-serial -Werror -d /src/rooms /src/ReadSpawnRooms.java \
+  && jar --create --file /src/read_spawn_rooms.jar --main-class ReadSpawnRooms -C /src/rooms . \
+  && javac -Xlint:all,-serial -Werror -d /src/version /src/ReadGameVersion.java \
+  && jar --create --file /src/read_game_version.jar --main-class ReadGameVersion -C /src/version .
 
 FROM cm2network/steamcmd:root
 
@@ -22,9 +24,9 @@ RUN su "${USER}" -c "STEAM_PLATFORM=linux32 '${STEAMCMDDIR}/steamcmd.sh' +quit" 
   && test -x "${STEAMCMDDIR}/linux64/steamcmd"
 
 COPY --from=eclipse-temurin:25-jre /opt/java/openjdk /opt/java/openjdk
-ENV PATH="/opt/java/openjdk/bin:${PATH}" ROOMS_READER=/worker/read_spawn_rooms.jar
-COPY --from=rooms /src/read_spawn_rooms.jar /worker/read_spawn_rooms.jar
+ENV PATH="/opt/java/openjdk/bin:${PATH}" ROOMS_READER=/worker/read_spawn_rooms.jar VERSION_READER=/worker/read_game_version.jar
+COPY --from=readers /src/read_spawn_rooms.jar /src/read_game_version.jar /worker/
 COPY --chmod=755 ci/lib.sh /worker/ci/
-COPY --chmod=755 worker/commit.sh worker/index_item.sh worker/serve.sh worker/work.sh /worker/worker/
+COPY --chmod=755 worker/commit.sh worker/index_item.sh worker/serve.sh worker/vanilla.sh worker/work.sh /worker/worker/
 USER ${USER}
 ENTRYPOINT ["/worker/worker/work.sh"]

@@ -10,6 +10,8 @@ Open an issue with the **Add a map** form and give the map's Workshop link or ID
 
 Once a day a check asks the Workshop which maps in the index changed or were removed since they were indexed, and queues each in an issue of its own. An item without map folders, such as a tile pack, is read again at most every 90 days; ask for it with the form to have it read sooner.
 
+Once a week a check installs the game's dedicated server from each of its Steam branches for Build 41 and Build 42 and reads which version it is and which cells the game's own maps cover.
+
 ## Popular maps
 
 Once a day a check also queues the most subscribed maps on the Workshop that the index doesn't have yet, a few at a time.
@@ -25,6 +27,7 @@ The repository's GitHub Pages publish the whole index as `index.json`, `{"items"
 `build-41.json` and `build-42.json` say what of each item the current version of that build loads, as the game reads the mods' `mod.info` files:
 
 - `gameVersion`: the version.
+- `vanilla`: the game's own map folders, with their `name` and `cells`.
 - `items`: by Workshop ID, with `id`, `title`, `timeUpdated` and `mods`, one per mod folder with a `mod.info`:
   - `folder`, and `id` and `name` from the `mod.info` the game reads.
   - `versionFolder`: the folder its files come from besides `common/`, `""` for the mod folder itself, `null` when the game doesn't find the mod on this version.
@@ -55,6 +58,8 @@ They leave out entries of the first format, which are read again soon, and entri
   - `translations`: the English titles of the item's maps in it, by `name`: `json` from `Translate/EN/<map>.json`, which Build 42.20 and later read, and `txt` from `Translate/EN/<map>/title.txt`, which earlier versions read.
 
 An item without maps stays in the index, so it isn't asked for again.
+
+`vanilla/<build>.json` holds the game's own maps on one build: `gameVersion` (as the server logs it), `branch` (the Steam branch it was read from) and `maps`, each folder in the game's `media/maps` with its `name` and `cells`.
 
 ## Licences
 

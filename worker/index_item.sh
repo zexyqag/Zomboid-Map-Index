@@ -180,22 +180,8 @@ while IFS=$'\t' read -r mod root path; do
   done
 done < "${tmp}/roots" > "${tmp}/maps"
 
-# The cells of each map folder, by y and x.
-awk -F '\t' '{ print $4 }' "${tmp}/maps" | while IFS= read -r map; do
-  find -L "${map}" -maxdepth 1 -name '*.lotheader' -printf '%H\t%f\n' 2> /dev/null || true
-done | LC_ALL=C awk -F '\t' '$2 ~ /^-?[0-9]+_-?[0-9]+\.lotheader$/ { split($2, at, /[_.]/); print $1 "\t" at[2] "\t" at[1] }' \
-  | LC_ALL=C sort -t $'\t' -k1,1 -k2,2n -k3,3n | LC_ALL=C awk -F '\t' '
-    function flush() { if (n) printf "%s[%d,%d,%d]", (runs++ ? "," : ""), y, first, last }
-    $1 != folder {
-      if (folder != "") { flush(); print "]" }
-      folder = $1
-      printf "%s\t[", folder
-      runs = n = 0
-    }
-    n && $2 == y && $3 == last + 1 { last = $3; next }
-    { flush(); y = $2; first = last = $3; n = 1 }
-    END { if (folder != "") { flush(); print "]" } }
-  ' > "${tmp}/cells"
+# The cells of each map folder.
+awk -F '\t' '{ print $4 }' "${tmp}/maps" | cell_runs > "${tmp}/cells"
 
 # Spawn points as SpawnPoints.parsePoint reads them: worldX and worldY count cells of 300 squares on both builds,
 # posX and posY squares within them, or squares of the world without them; posZ is the level, 0 when missing.

@@ -1,6 +1,6 @@
 #!/bin/bash
-# Shared by the checks and the worker: Steam's public details of Workshop items, the items of the index and of a
-# Steam library, and the issues that queue work for the worker.
+# Shared by the checks and the worker: Steam's public details of Workshop items, the cells of map folders, the items
+# of the index and of a Steam library, and the issues that queue work for the worker.
 
 STEAM_DETAILS=https://api.steampowered.com/ISteamRemoteStorage/GetPublishedFileDetails/v1/
 # Project Zomboid's app on the Workshop.
@@ -33,6 +33,26 @@ item_problem() {
     elif (.banned // 0) != 0 then "banned"
     elif any(.tags[]?; .tag == "Map") | not then "tag"
     else empty end'
+}
+
+cell_runs() {
+  # stdin = map folders, one per line. Prints "<folder>\t<cells>" for each with cell headers (<x>_<y>.lotheader), the
+  # cells as JSON runs [y, first x, last x], by y and x.
+  while IFS= read -r map; do
+    find -L "${map}" -maxdepth 1 -name '*.lotheader' -printf '%H\t%f\n' 2> /dev/null || true
+  done | LC_ALL=C awk -F '\t' '$2 ~ /^-?[0-9]+_-?[0-9]+\.lotheader$/ { split($2, at, /[_.]/); print $1 "\t" at[2] "\t" at[1] }' \
+    | LC_ALL=C sort -t $'\t' -k1,1 -k2,2n -k3,3n | LC_ALL=C awk -F '\t' '
+      function flush() { if (n) printf "%s[%d,%d,%d]", (runs++ ? "," : ""), y, first, last }
+      $1 != folder {
+        if (folder != "") { flush(); print "]" }
+        folder = $1
+        printf "%s\t[", folder
+        runs = n = 0
+      }
+      n && $2 == y && $3 == last + 1 { last = $3; next }
+      { flush(); y = $2; first = last = $3; n = 1 }
+      END { if (folder != "") { flush(); print "]" } }
+    '
 }
 
 installed_items() {
