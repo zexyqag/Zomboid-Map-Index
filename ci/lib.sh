@@ -5,6 +5,8 @@
 STEAM_DETAILS=https://api.steampowered.com/ISteamRemoteStorage/GetPublishedFileDetails/v1/
 # Project Zomboid's app on the Workshop.
 WORKSHOP_APP=108600
+# The version of the index entries' format; entries of an older one are read again.
+INDEX_FORMAT=2
 
 steam_details() {
   # stdin = workshop IDs, one per line. Prints Steam's details of each as one JSON line; fails when Steam
@@ -51,6 +53,11 @@ installed_items() {
 indexed_time() {
   # $1 = workshop ID. Prints the Workshop update time the index has the item from, if it has it.
   [ ! -f "items/$1.json" ] || jq -r '.timeUpdated' "items/$1.json"
+}
+
+indexed_current() {
+  # $1 = workshop ID of an item in the index. True when its entry has the format the worker writes.
+  jq -e --argjson format "${INDEX_FORMAT}" '.format == $format' "items/$1.json" > /dev/null
 }
 
 open_issues() {

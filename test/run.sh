@@ -46,8 +46,66 @@ if [ "$1 $2" = "issue create" ]; then
 fi
 exit 0
 EOF
-chmod +x "${WORK}/bin/curl" "${WORK}/bin/gh"
+# sleep logs what it is asked to wait, and doesn't.
+cat > "${WORK}/bin/sleep" <<'EOF'
+#!/bin/bash
+printf '%s\n' "$*" >> "${WORK}/sleep-calls"
+EOF
+chmod +x "${WORK}/bin/curl" "${WORK}/bin/gh" "${WORK}/bin/sleep"
 export WORK PATH="${WORK}/bin:${PATH}"
+
+# The room reader, built as the worker image builds it.
+if ! javac -Xlint:all,-serial -Werror -d "${WORK}/rooms" "${REPO}/worker/ReadSpawnRooms.java" \
+  || ! jar --create --file "${WORK}/read_spawn_rooms.jar" --main-class ReadSpawnRooms -C "${WORK}/rooms" .; then
+  echo "The room reader did not compile (the tests need a JDK)" >&2
+  exit 1
+fi
+export ROOMS_READER="${WORK}/read_spawn_rooms.jar"
+
+# Writes a cell header the way the game's map tools do: $1 = file, $2 = 42 (version 1, with the magic),
+# 42.0 (version 0, without) or 41, then one argument per room, "room <name> <level> <objects> <x> <y> <w> <h>...",
+# or per building, "building <room index>...".
+lotheader() {
+  local file="$1" layout="$2" item i
+  shift 2
+  local -a rooms=() buildings=() words
+  for item; do
+    case "${item}" in
+      room\ *) rooms+=("${item}") ;;
+      building\ *) buildings+=("${item}") ;;
+    esac
+  done
+  int() {
+    local v=$(( $1 & 0xFFFFFFFF ))
+    # shellcheck disable=SC2059 # the format is the bytes
+    printf "$(printf '\\x%02x\\x%02x\\x%02x\\x%02x' $(( v & 255 )) $(( v >> 8 & 255 )) $(( v >> 16 & 255 )) $(( v >> 24 & 255 )))"
+  }
+  {
+    if [ "${layout}" = 42 ]; then printf LOTH; int 1; else int 0; fi
+    int 2
+    printf 'tile_one\r\ntile_two\n'
+    [ "${layout}" = 42 ] || printf '\001'
+    if [ "${layout}" = 41 ]; then int 10; int 10; else int 8; int 8; fi
+    if [ "${layout}" = 42 ]; then int -1; int 2; else int 3; fi
+    int "${#rooms[@]}"
+    for item in "${rooms[@]}"; do
+      read -r -a words <<< "${item}"
+      printf '%s\n' "${words[1]}"
+      int "${words[2]}"
+      int $(( (${#words[@]} - 4) / 4 ))
+      for ((i = 4; i < ${#words[@]}; i++)); do int "${words[i]}"; done
+      int "${words[3]}"
+      for ((i = 0; i < words[3] * 3; i++)); do int 7; done
+    done
+    int "${#buildings[@]}"
+    for item in "${buildings[@]}"; do
+      read -r -a words <<< "${item}"
+      int $(( ${#words[@]} - 1 ))
+      for ((i = 1; i < ${#words[@]}; i++)); do int "${words[i]}"; done
+    done
+    head -c "$([ "${layout}" = 41 ] && echo 900 || echo 1024)" /dev/zero
+  } > "${file}"
+}
 
 LABELS='label | create | add | --color | 1d76db | --description | A map to add to the index | --force
 label | create | update | --color | fbca04 | --description | A map that changed since it was indexed | --force
@@ -127,14 +185,21 @@ issue | close | 9 | --reason | not planned"
 issue | list | --state | open | --limit | 1000 | --json | number,title"
 
   # In the index: current, or older than the Workshop's.
-  printf '{"id": "3484263516", "title": "Raven Creek B42", "timeUpdated": 1789883053}\n' > "${WORK}/request/items/3484263516.json"
+  printf '{"format": 2, "id": "3484263516", "title": "Raven Creek B42", "timeUpdated": 1789883053}\n' > "${WORK}/request/items/3484263516.json"
   request "$(form 3484263516)"
   expect_eq "$(calls | tail -n 2)" "issue | comment | 9 | --body | Raven Creek B42 is in the index already, from its update of $(date -u -d @1789883053 +%Y-%m-%d).
 issue | close | 9 | --reason | completed"
-  printf '{"id": "3484263516", "title": "Raven Creek B42", "timeUpdated": 1700000000}\n' > "${WORK}/request/items/3484263516.json"
+  printf '{"format": 2, "id": "3484263516", "title": "Raven Creek B42", "timeUpdated": 1700000000}\n' > "${WORK}/request/items/3484263516.json"
   request "$(form 3484263516)"
   expect_eq "$(calls | tail -n 2)" "issue | edit | 9 | --title | Update Raven Creek B42 (3484263516) | --add-label | update,ready | --remove-label | add
 issue | comment | 9 | --body | Queued: the index has Raven Creek B42 from its update of $(date -u -d @1700000000 +%Y-%m-%d); it changed on $(date -u -d @1789883053 +%Y-%m-%d). This issue closes when the index has it."
+  # Current, but of an older format.
+  for entry in '"format": 1, ' ''; do
+    printf '{%s"id": "3484263516", "title": "Raven Creek B42", "timeUpdated": 1789883053}\n' "${entry}" > "${WORK}/request/items/3484263516.json"
+    request "$(form 3484263516)"
+    expect_eq "$(calls | tail -n 2)" "issue | edit | 9 | --title | Update Raven Creek B42 (3484263516) | --add-label | update,ready | --remove-label | add
+issue | comment | 9 | --body | Queued: the index has Raven Creek B42 in an older format, so it is read again. This issue closes when the index has it."
+  done
 
   # Without Steam the check fails and leaves the issue as it is.
   FAKE_STEAM_DOWN=1 request "$(form 3484263516)" > /dev/null && fail "the check passed without Steam"
@@ -151,22 +216,26 @@ test_freshness() {
   bash "${repo}/ci/freshness.sh" || fail "the check failed without items"
   expect_eq "$(calls)" ""
 
-  for item in '1 Current 100' '2 Changed 100' '3 Removed 100' '4 Banned 100' '5 Queued 100' '6 Elsewhere 100'; do
-    read -r id title updated <<< "${item}"
-    printf '{"id": "%s", "title": "%s", "timeUpdated": %s, "mods": []}\n' "${id}" "${title}" "${updated}" > "${repo}/items/${id}.json"
+  for item in '1 Current 100 2' '2 Changed 100 2' '3 Removed 100 2' '4 Banned 100 2' '5 Queued 100 2' '6 Elsewhere 100 2' '7 Older 100 1'; do
+    read -r id title updated format <<< "${item}"
+    printf '{"format": %s, "id": "%s", "title": "%s", "timeUpdated": %s, "mods": []}\n' "${format}" "${id}" "${title}" "${updated}" > "${repo}/items/${id}.json"
   done
   export FAKE_ITEMS
   FAKE_ITEMS="$(jq -n -c --argjson current "$(details 1 Current 100)" --argjson changed "$(details 2 "Changed Again" 200)" \
     --argjson banned "$(details 4 Banned 100 108600 1)" --argjson queued "$(details 5 Queued 300)" --argjson elsewhere "$(details 6 Elsewhere 100 999)" \
-    '{"1": $current, "2": $changed, "4": $banned, "5": $queued, "6": $elsewhere}')"
-  rm -f "${WORK}/gh-calls"
+    --argjson older "$(details 7 "Older Format" 100)" \
+    '{"1": $current, "2": $changed, "4": $banned, "5": $queued, "6": $elsewhere, "7": $older}')"
+  rm -f "${WORK}/gh-calls" "${WORK}/sleep-calls"
   FAKE_OPEN='[{"number": 3, "title": "Update Queued (5)"}]' bash "${repo}/ci/freshness.sh" || fail "the check failed"
   expect_eq "$(calls)" "${LABELS}
 issue | list | --state | open | --limit | 1000 | --json | number,title
 issue | create | --title | Update Changed Again (2) | --label | update,ready | --body | Changed Again changed on the Workshop on $(date -u -d @200 +%Y-%m-%d); the index has it from $(date -u -d @100 +%Y-%m-%d). https://steamcommunity.com/sharedfiles/filedetails/?id=2
 issue | create | --title | Gone Removed (3) | --label | gone,ready | --body | The Workshop no longer has Removed as a Project Zomboid item (removed). https://steamcommunity.com/sharedfiles/filedetails/?id=3
 issue | create | --title | Gone Banned (4) | --label | gone,ready | --body | The Workshop no longer has Banned as a Project Zomboid item (banned). https://steamcommunity.com/sharedfiles/filedetails/?id=4
-issue | create | --title | Gone Elsewhere (6) | --label | gone,ready | --body | The Workshop no longer has Elsewhere as a Project Zomboid item (not for Project Zomboid). https://steamcommunity.com/sharedfiles/filedetails/?id=6"
+issue | create | --title | Gone Elsewhere (6) | --label | gone,ready | --body | The Workshop no longer has Elsewhere as a Project Zomboid item (not for Project Zomboid). https://steamcommunity.com/sharedfiles/filedetails/?id=6
+issue | create | --title | Update Older Format (7) | --label | update,ready | --body | The index has Older Format in an older format, so the worker reads it again. https://steamcommunity.com/sharedfiles/filedetails/?id=7"
+  # A second between new issues.
+  expect_eq "$(paste -sd ' ' "${WORK}/sleep-calls")" "1 1 1 1"
 
   # Without Steam, or with an item left out of its answer, it fails before touching any issue.
   rm -f "${WORK}/gh-calls"
@@ -176,19 +245,34 @@ issue | create | --title | Gone Elsewhere (6) | --label | gone,ready | --body | 
 }
 
 
-# Makes the folder of a Workshop item: $1 = folder. Mod Town (Build 42) has its cells in 42/ and its title only in
-# common/'s translations; Old (Build 41 layout) has a map without map.info; Empty has no mod files.
+# Makes the folder of a Workshop item: $1 = folder. Mod Town (Build 42) has its cells, spawn points, zones and
+# mod.info in 42/, its title only in common/'s translations and a zone loader that fails in common/; Old (Build 41
+# layout) has a map without map.info and one with a building, and a zone loader that works; Empty has no mod files.
 make_item() {
   local item="$1"
   mkdir -p "${item}/mods/Town/42/media/maps/Town" "${item}/mods/Town/common/media/maps/Town" "${item}/mods/Town/common/media/lua/shared/Translate/EN/Town" \
     "${item}/mods/Old/media/maps/Old Map" "${item}/mods/Old/media/maps/Bare" "${item}/mods/Empty/42"
-  touch "${item}/mods/Town/42/mod.info" "${item}/mods/Town/42/media/maps/Town/"{10_5,11_5,12_5,10_6,x_1,1_2_3}.lotheader \
+  touch "${item}/mods/Town/42/media/maps/Town/"{12_5,10_6,x_1,1_2_3}.lotheader \
     "${item}/mods/Town/42/media/maps/Town/13_5.lotheader.bak" "${item}/mods/Old/mod.info" "${item}/mods/Old/media/maps/Old Map/"{0_0,-1_0}.lotheader
-  printf 'title=Old\r\n  title=Town  \r\n' > "${item}/mods/Town/42/media/maps/Town/map.info"
+  printf 'title=Old\r\nlots=Muldraugh, KY\r  title=Town  \r\n\n description=Hidden\n' > "${item}/mods/Town/42/media/maps/Town/map.info"
   printf 'description=No title\n' > "${item}/mods/Old/media/maps/Old Map/map.info"
   printf '%s\n' 'function SpawnPoints()' 'return { unemployed = { { worldX = 10, worldY = 5, posX = 12, posY = 34, posZ = 1 },' \
     '  { posX = 2600, posY = 1290 }, -- { posX = 9, posY = 9 },' '  { posX = 7 }, { worldX = 1, posX = 5, posY = 5 } },' \
-    'chef = { { posX = 2600, posY = 1290 } } }' 'end' > "${item}/mods/Town/42/media/maps/Town/spawnpoints.lua"
+    'chef = { { posX = 2600, posY = 1290 }, { posX = 3100, posY = 1600 } } }' 'end' > "${item}/mods/Town/42/media/maps/Town/spawnpoints.lua"
+  # 11_5 has a kitchen on level 1 holding a point; 10_5 has only the outside around another; 12_5 can't be read.
+  lotheader "${item}/mods/Town/42/media/maps/Town/11_5.lotheader" 42 'room kitchen 1 2 190 250 10 10' 'building 0'
+  lotheader "${item}/mods/Town/42/media/maps/Town/10_5.lotheader" 42 'room emptyoutside 0 0 30 0 20 20' 'building 0'
+  printf 'name=Town\r\nid=Town\rdescription=A town\n\n  require=TilePack \nposter=poster.png' > "${item}/mods/Town/42/mod.info"
+  printf '%s\n' 'objects = {' '  { name = "", type = "ParkingStall", x = 1, y = 2, z = 0, width = 3, height = 4 },' \
+    '  { name = "", type = "Mannequin", geometry = "point", points = { 5, 6 } },' '}' > "${item}/mods/Town/42/media/maps/Town/objects.lua"
+  printf 'regions = {}\n' > "${item}/mods/Town/42/media/maps/Town/regions.lua"
+  mkdir -p "${item}/mods/Town/common/media/lua/server/metazones" "${item}/mods/Old/media/lua/server/metazones" "${item}/mods/Old/media/maps/Farm"
+  printf '%s\n' "error('..v.x..','..v.y..','..v.z)" 'local right = v.x + v.width' > "${item}/mods/Town/common/media/lua/server/metazones/metazoneHandler.lua"
+  printf -- '-- fixed\n' > "${item}/mods/Old/media/lua/server/metazones/metazoneHandler.lua"
+  # Old's Farm (Build 41 cells of 300 squares) has a barn holding its point.
+  lotheader "${item}/mods/Old/media/maps/Farm/0_0.lotheader" 41 'room barn 0 0 45 55 10 10' 'building 0'
+  printf 'function SpawnPoints() return { unemployed = { { worldX = 0, worldY = 0, posX = 50, posY = 60 } } } end\n' \
+    > "${item}/mods/Old/media/maps/Farm/spawnpoints.lua"
   printf 'function SpawnPoints() return {} end\n' > "${item}/mods/Old/media/maps/Bare/spawnpoints.lua"
   printf '\357\273\277  Town Proper \r\nsecond\r\n' > "${item}/mods/Town/common/media/lua/shared/Translate/EN/Town/title.txt"
   printf '{\n  "description": "A \\"title\\": inside",\n  "title" : "Town \\"J\\" \\u00e9"\n}\n' > "${item}/mods/Town/common/media/lua/shared/Translate/EN/Town.json"
@@ -196,14 +280,16 @@ make_item() {
   printf '{ "title": "" }\n' > "${item}/mods/Old/media/lua/shared/Translate/EN/Old Map.json"
   printf '{ "title": "Not a map" }\n' > "${item}/mods/Town/common/media/lua/shared/Translate/EN/Sandbox.json"
 }
-ITEM_JSON='{"id":"123","title":"Town Pack","timeUpdated":200,"mods":[{"folder":"Old","roots":[{"path":"","maps":[{"name":"Bare","cells":[],"spawns":[],"mapInfo":false,"title":null},{"name":"Old Map","cells":[[0,-1,0]],"spawns":null,"mapInfo":true,"title":null}],"translations":[]}]},{"folder":"Town","roots":[{"path":"42","maps":[{"name":"Town","cells":[[5,10,12],[6,10,10]],"spawns":[[3012,1534,1],[2600,1290,0]],"mapInfo":true,"title":"Town"}],"translations":[]},{"path":"common","maps":[{"name":"Town","cells":[],"spawns":null,"mapInfo":false,"title":null}],"translations":[{"name":"Town","json":"Town \"J\" é","txt":"Town Proper"}]}]}]}'
+ITEM_JSON='{"format":2,"id":"123","title":"Town Pack","timeUpdated":200,"mods":[{"folder":"Old","roots":[{"path":"","modInfo":[],"zoneLoader":false,"maps":[{"name":"Bare","cells":[],"spawns":[],"rooms":[],"zones":{},"mapInfo":null,"title":null},{"name":"Farm","cells":[[0,0,0]],"spawns":[[50,60,0]],"rooms":[[50,60,0,45,55]],"zones":{},"mapInfo":null,"title":null},{"name":"Old Map","cells":[[0,-1,0]],"spawns":null,"rooms":[],"zones":{},"mapInfo":[],"title":null}],"translations":[]}]},{"folder":"Town","roots":[{"path":"42","modInfo":["name=Town","id=Town","  require=TilePack ","poster=poster.png"],"zoneLoader":null,"maps":[{"name":"Town","cells":[[5,10,12],[6,10,10]],"spawns":[[3012,1534,1],[2600,1290,0],[3100,1600,0]],"rooms":[[3012,1534,1,3006,1530],[3100,1600,0]],"zones":{"objects.lua":3,"regions.lua":null},"mapInfo":["title=Old","lots=Muldraugh, KY","  title=Town  "],"title":"Town"}],"translations":[]},{"path":"common","modInfo":null,"zoneLoader":true,"maps":[{"name":"Town","cells":[],"spawns":null,"rooms":[],"zones":{},"mapInfo":null,"title":null}],"translations":[{"name":"Town","json":"Town \"J\" é","txt":"Town Proper"}]}]}]}'
 
 test_index_item() {
   TEST='index item'
   make_item "${WORK}/item"
-  expect_eq "$(bash "${REPO}/worker/index_item.sh" "${WORK}/item" 123 "Town Pack" 200)" "${ITEM_JSON}"
+  expect_eq "$(bash "${REPO}/worker/index_item.sh" "${WORK}/item" 123 "Town Pack" 200 2> "${WORK}/index-err")" "${ITEM_JSON}"
+  grep -qxF "Warning: ${WORK}/item/mods/Town/42/media/maps/Town/12_5.lotheader could not be read (java.io.EOFException), so the buildings on its cell are unknown" \
+    "${WORK}/index-err" || fail "no warning of the header that can't be read: $(cat "${WORK}/index-err")"
   mkdir -p "${WORK}/nothing"
-  expect_eq "$(bash "${REPO}/worker/index_item.sh" "${WORK}/nothing" 9 "Nothing" 1)" '{"id":"9","title":"Nothing","timeUpdated":1,"mods":[]}'
+  expect_eq "$(bash "${REPO}/worker/index_item.sh" "${WORK}/nothing" 9 "Nothing" 1)" '{"format":2,"id":"9","title":"Nothing","timeUpdated":1,"mods":[]}'
 }
 
 test_work() {
@@ -312,7 +398,7 @@ test_library() {
   export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null
   git init --quiet --bare --initial-branch=main "${remote}"
   git clone --quiet "${remote}" "${clone}" 2> /dev/null
-  mkdir -p "${clone}/worker" "${clone}/items" "${library}" "${WORK}/library-bin"
+  mkdir -p "${clone}/worker" "${clone}/items" "${library}"
   cp -r "${REPO}/ci" "${clone}/"
   cp "${REPO}/worker/library.sh" "${clone}/worker/"
   printf '{"id": "111"}\n' > "${clone}/items/111.json"
@@ -334,9 +420,6 @@ test_library() {
     --argjson alpha "$(details 555 "alpha Map" 5)" --argjson banned "$(details 666 "Banned Map" 5 108600 1)" \
     --argjson gamma "$(details 777 "Gamma Map" 5)" --argjson details "$(details 999 "Details Only" 5)" \
     '{"111": $indexed, "222": $queued, "333": $mod, "444": $beta, "555": $alpha, "666": $banned, "777": $gamma, "999": $details}')"
-  printf '#!/bin/bash\nprintf "%%s\\n" "$*" >> "${WORK}/sleep-calls"\n' > "${WORK}/library-bin/sleep"
-  chmod +x "${WORK}/library-bin/sleep"
-  PATH="${WORK}/library-bin:${PATH}"
   local list
   list="Maps in ${library} that the index doesn't have:
    1  alpha Map (555), 115 MB

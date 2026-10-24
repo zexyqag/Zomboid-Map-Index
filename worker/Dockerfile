@@ -1,3 +1,8 @@
+FROM eclipse-temurin:25-jdk AS rooms
+COPY worker/ReadSpawnRooms.java /src/
+RUN javac -Xlint:all,-serial -Werror -d /src/classes /src/ReadSpawnRooms.java \
+  && jar --create --file /src/read_spawn_rooms.jar --main-class ReadSpawnRooms -C /src/classes .
+
 FROM cm2network/steamcmd:root
 
 RUN apt-get update \
@@ -16,6 +21,9 @@ ENV STEAM_PLATFORM=linux64
 RUN su "${USER}" -c "STEAM_PLATFORM=linux32 '${STEAMCMDDIR}/steamcmd.sh' +quit" \
   && test -x "${STEAMCMDDIR}/linux64/steamcmd"
 
+COPY --from=eclipse-temurin:25-jre /opt/java/openjdk /opt/java/openjdk
+ENV PATH="/opt/java/openjdk/bin:${PATH}" ROOMS_READER=/worker/read_spawn_rooms.jar
+COPY --from=rooms /src/read_spawn_rooms.jar /worker/read_spawn_rooms.jar
 COPY --chmod=755 ci/lib.sh /worker/ci/
 COPY --chmod=755 worker/index_item.sh worker/work.sh /worker/worker/
 USER ${USER}

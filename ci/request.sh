@@ -38,7 +38,7 @@ esac
 title="$(jq -r '.title' <<< "${details}")"
 updated="$(jq -r '.time_updated' <<< "${details}")"
 indexed="$(indexed_time "${id}")"
-if [ -n "${indexed}" ] && [ "${indexed}" -ge "${updated}" ]; then
+if [ -n "${indexed}" ] && [ "${indexed}" -ge "${updated}" ] && indexed_current "${id}"; then
   gh issue comment "${number}" --body "${title} is in the index already, from its update of $(utc_date "${indexed}")." > /dev/null
   gh issue close "${number}" --reason completed > /dev/null
   exit 0
@@ -63,7 +63,9 @@ gh issue edit "${number}" "${args[@]}" > /dev/null
 size="$(jq -r '(.file_size | tonumber) / 1048576 | ceil' <<< "${details}")"
 if [ "${kind}" = add ]; then
   message="Queued: ${title}, about ${size} MB, updated on the Workshop on $(utc_date "${updated}")."
-else
+elif [ "${indexed}" -lt "${updated}" ]; then
   message="Queued: the index has ${title} from its update of $(utc_date "${indexed}"); it changed on $(utc_date "${updated}")."
+else
+  message="Queued: the index has ${title} in an older format, so it is read again."
 fi
 gh issue comment "${number}" --body "${message} This issue closes when the index has it." > /dev/null

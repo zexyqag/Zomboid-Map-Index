@@ -16,11 +16,18 @@ The checks run on GitHub Actions and only read the Workshop's public details of 
 
 ## Data
 
-`items/<workshop id>.json` holds one Workshop item: `id`, `title`, `timeUpdated` (the Workshop's update time it was read at) and `mods`, one per folder in the item's `mods/`:
+`items/<workshop id>.json` holds one Workshop item: `format` (the version of this format, now 2; entries of an older one are read again), `id`, `title`, `timeUpdated` (the Workshop's update time it was read at) and `mods`, one per folder in the item's `mods/`:
 
 - `folder`: the mod folder's name.
 - `roots`: each folder the game may read the mod's files from, with a `path` relative to the mod folder: `""` for the mod folder itself (the Build 41 layout), a version folder such as `"42"`, or `"common"`. Which of them the game reads depends on its version.
-  - `maps`: the map folders in its `media/maps`: `name`, `cells` as runs `[y, first x, last x]` of the `<x>_<y>.lotheader` files, `spawns` as `[x, y, z]` squares from `spawnpoints.lua` (`null` without one), `mapInfo` (whether it has a `map.info`) and `title` (its `title=` line, `null` without one).
+  - `modInfo`: the lines of its `mod.info` as the game reads them (ending at `\n`, `\r\n` or a lone `\r`), without blank lines and lines that start with `description=`; `null` without one.
+  - `zoneLoader`: whether its `media/lua/server/metazones/metazoneHandler.lua` is one that fails on zones without x, y, z, width or height, as Build 42's does; `null` without one.
+  - `maps`: the map folders in its `media/maps`:
+    - `name`, and `cells` as runs `[y, first x, last x]` of the `<x>_<y>.lotheader` files.
+    - `spawns`: `[x, y, z]` squares from `spawnpoints.lua` (`null` without one).
+    - `rooms`: the buildings in the map's own cells that hold its spawn points, read from the cell headers as the game reads them (cells of 300 squares in the mod folder itself, 256 in the others): `[x, y, z, building x, building y]` per point and building, the building's x and y being the least of its rooms, or `[x, y, z]` for a point a header that can't be read could hold.
+    - `zones`: for each of `objects.lua`, `regions.lua` and `roomtones.lua` the map has, the line of the zone the game stops loading zones at, or `null` when it reads the whole file.
+    - `mapInfo`: the lines of its `map.info`, like `modInfo`; `null` without one. `title`: its last `title=` line, `null` without one.
   - `translations`: the English titles of the item's maps in it, by `name`: `json` from `Translate/EN/<map>.json`, which Build 42.20 and later read, and `txt` from `Translate/EN/<map>/title.txt`, which earlier versions read.
 
 An item without maps stays in the index, so it isn't asked for again.
