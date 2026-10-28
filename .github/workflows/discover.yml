@@ -2,14 +2,11 @@ name: Discover
 
 on:
   schedule:
-    - cron: '13 6 * * *'
+    - cron: '13 * * * *'
   workflow_dispatch:
     inputs:
       count:
-        description: How many issues to open (empty tops the queue up, as the daily run does)
-        required: false
-      top:
-        description: How many of the most subscribed maps to look through (empty takes the DISCOVER_TOP variable, 500 unless set)
+        description: How many issues to open (empty tops the queue up, as the hourly run does)
         required: false
       tags:
         description: Workshop tags the maps must also have, comma-separated, such as Build 42 (empty takes the DISCOVER_TAGS variable)
@@ -30,13 +27,12 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v7
 
-      - name: Queue popular maps
+      - name: Queue maps
         run: bash ci/discover.sh
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           STEAM_API_KEY: ${{ secrets.STEAM_API_KEY }}
-          DISCOVER_TOP: ${{ inputs.top || vars.DISCOVER_TOP || 500 }}
           DISCOVER_QUEUE: ${{ vars.DISCOVER_QUEUE || 50 }}
           DISCOVER_COUNT: ${{ inputs.count }}
           DISCOVER_TAGS: ${{ inputs.tags || vars.DISCOVER_TAGS }}

@@ -12,9 +12,9 @@ Once a day a check asks the Workshop which maps in the index changed or were rem
 
 Once a week a check installs the game's dedicated server from each of its Steam branches for Build 41 and Build 42 and reads which version it is and which cells the game's own maps cover.
 
-## Required items and popular maps
+## Required items and every map
 
-Once a day a check also queues, a few at a time, what the index doesn't have yet: first the items that its items require on the Workshop, such as tile packs, so it knows which item provides each mod a map needs, then the most subscribed maps on the Workshop.
+Every hour a check also queues, a few at a time, what the index doesn't have yet: first the items that its items require on the Workshop, such as tile packs, so it knows which item provides each mod a map needs, then every other map on the Workshop, for any build of the game, most subscribed first.
 
 ## How it works
 

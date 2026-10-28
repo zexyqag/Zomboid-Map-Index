@@ -815,7 +815,7 @@ test_discover() {
     {"number": 6, "title": "Add First (1001)", "pull_request": {}, "labels": [{"name": "ready"}]}]'
   discover() {
     rm -f "${WORK}/gh-calls" "${WORK}/sleep-calls" "${WORK}/query-calls" "${WORK}/full-calls"
-    DISCOVER_TOP="$1" DISCOVER_QUEUE="$2" bash "${repo}/ci/discover.sh"
+    DISCOVER_QUEUE="$1" bash "${repo}/ci/discover.sh"
   }
   created() { calls | grep '^issue | create' | sed -E 's/^issue \| create \| --title \| ([^|]*) \|.*/\1/' | paste -sd ',' -; }
 
@@ -823,7 +823,7 @@ test_discover() {
 
   # One queued, two more wanted: first what the index's items require, then the most subscribed it can take, reading
   # no more of the ranking than it takes.
-  out="$(discover 150 3)" || fail "the check failed"
+  out="$(discover 3)" || fail "the check failed"
   expect_eq "${out}" "Queued 2 items."
   expect_eq "$(calls | grep '^issue | create')" "issue | create | --title | Add More Tiles (1102) | --label | add,ready | --body | More Tiles is required on the Workshop by Third, Tiles, about 115 MB, updated on $(date -u -d @1 +%Y-%m-%d). https://steamcommunity.com/sharedfiles/filedetails/?id=1102
 issue | create | --title | Add First (1001) | --label | add,ready | --body | First is number 1 of the most subscribed maps on the Workshop, about 115 MB, updated on $(date -u -d @1789883053 +%Y-%m-%d). https://steamcommunity.com/sharedfiles/filedetails/?id=1001"
@@ -832,39 +832,34 @@ issue | create | --title | Add First (1001) | --label | add,ready | --body | Fir
   expect_eq "$(cat "${WORK}/sleep-calls")" "8"
   expect_eq "$(cat "${WORK}/query-calls")" "key=fake-key query_type=9 appid=108600 requiredtags[0]=Map numperpage=100 cursor=* ids_only=true"
   # More wanted than the first page has: the next pages by their cursors, until a page isn't full.
-  out="$(discover 500 10)" || fail "the check failed with more wanted"
-  expect_eq "${out}" "Queued 4 of the 9 items wanted: the index has or queues the rest of the 250 most subscribed maps."
+  out="$(discover 10)" || fail "the check failed with more wanted"
+  expect_eq "${out}" "Queued 4 of the 9 items wanted: the index has or queues the rest of the 250 maps on the Workshop."
   expect_eq "$(created)" "Add More Tiles (1102),Add First (1001),Add Fifth (1005),Add Sixth (1006)"
   expect_eq "$(calls | grep -c 'Sixth is number 6 of')" 1
   expect_eq "$(query)" "* after100 after200"
-  # Only the most subscribed count.
-  out="$(discover 5 10)" || fail "the check failed with a short top"
-  expect_eq "${out}" "Queued 3 of the 9 items wanted: the index has or queues the rest of the 5 most subscribed maps."
-  expect_eq "$(created)" "Add More Tiles (1102),Add First (1001),Add Fifth (1005)"
-  expect_eq "$(query)" "*"
   # What the index's items require can be all it wants.
-  discover 500 2 > /dev/null || fail "the check failed with one wanted"
+  discover 2 > /dev/null || fail "the check failed with one wanted"
   expect_eq "$(created)" "Add More Tiles (1102)"
   [ -e "${WORK}/query-calls" ] && fail "it read the ranking with what it wanted queued"
   # The ranking ends where Steam gives no cursor, or no IDs.
-  FAKE_NO_CURSOR=no FAKE_RANKED="$(seq -s ' ' 1001 1200)" discover 500 10 > /dev/null || fail "the check failed without a cursor"
+  FAKE_NO_CURSOR=no FAKE_RANKED="$(seq -s ' ' 1001 1200)" discover 10 > /dev/null || fail "the check failed without a cursor"
   expect_eq "$(query)" "*"
-  FAKE_RANKED="$(seq -s ' ' 1001 1200)" discover 500 10 > /dev/null || fail "the check failed with whole pages"
+  FAKE_RANKED="$(seq -s ' ' 1001 1200)" discover 10 > /dev/null || fail "the check failed with whole pages"
   expect_eq "$(query)" "* after100 after200"
   # Maps with more tags than Map, spaces around each left out.
-  out="$(DISCOVER_TAGS=' Build 42 ,,Vehicles' discover 150 3)" || fail "the check failed with tags"
+  out="$(DISCOVER_TAGS=' Build 42 ,,Vehicles' discover 3)" || fail "the check failed with tags"
   expect_eq "$(cat "${WORK}/query-calls")" "key=fake-key query_type=9 appid=108600 requiredtags[0]=Map requiredtags[1]=Build 42 requiredtags[2]=Vehicles numperpage=100 cursor=* ids_only=true"
   expect_eq "$(calls | grep -c 'First is number 1 of the most subscribed maps tagged Build 42 and Vehicles on the Workshop')" 1
-  out="$(DISCOVER_TAGS='Build 42' discover 5 10)" || fail "the check failed with a tag and a short top"
-  expect_eq "${out}" "Queued 3 of the 9 items wanted: the index has or queues the rest of the 5 most subscribed maps tagged Build 42."
+  out="$(DISCOVER_TAGS='Build 42' discover 10)" || fail "the check failed with a tag and more wanted"
+  expect_eq "${out}" "Queued 4 of the 9 items wanted: the index has or queues the rest of the 250 maps tagged Build 42 on the Workshop."
   # So many issues, however full the queue.
-  out="$(DISCOVER_COUNT=2 discover 150 1)" || fail "the check failed with a count"
+  out="$(DISCOVER_COUNT=2 discover 1)" || fail "the check failed with a count"
   expect_eq "${out}" "Queued 2 items."
   expect_eq "$(created)" "Add More Tiles (1102),Add First (1001)"
-  for setting in DISCOVER_COUNT DISCOVER_TOP DISCOVER_QUEUE; do
+  for setting in DISCOVER_COUNT DISCOVER_QUEUE; do
     for bad in 0 -1 1x '1+1'; do
       rm -f "${WORK}/gh-calls"
-      (export "${setting}=${bad}"; DISCOVER_TOP="${DISCOVER_TOP:-150}" DISCOVER_QUEUE="${DISCOVER_QUEUE:-3}" \
+      (export "${setting}=${bad}"; DISCOVER_QUEUE="${DISCOVER_QUEUE:-3}" \
         bash "${repo}/ci/discover.sh" > /dev/null) && fail "it passed with ${setting} ${bad}"
       expect_eq "$(calls)" ""
     done
@@ -872,25 +867,25 @@ issue | create | --title | Add First (1001) | --label | add,ready | --body | Fir
   # Required items queued already, or ranked too, come once.
   FAKE_OPEN='[{"number": 4, "title": "Add Fourth (1004)", "labels": [{"name": "add"}, {"name": "ready"}]},
     {"number": 6, "title": "Add More Tiles (1102)", "labels": [{"name": "add"}, {"name": "ready"}]}]' \
-    FAKE_RANKED='1102 1001' discover 500 10 > /dev/null || fail "the check failed with the tile pack queued"
+    FAKE_RANKED='1102 1001' discover 10 > /dev/null || fail "the check failed with the tile pack queued"
   expect_eq "$(created)" "Add First (1001)"
-  FAKE_RANKED='1102 1001' discover 500 10 > /dev/null || fail "the check failed with the tile pack ranked"
+  FAKE_RANKED='1102 1001' discover 10 > /dev/null || fail "the check failed with the tile pack ranked"
   expect_eq "$(created)" "Add More Tiles (1102),Add First (1001)"
   # A full queue asks Steam nothing.
-  out="$(discover 150 1)" || fail "the check failed with a full queue"
+  out="$(discover 1)" || fail "the check failed with a full queue"
   expect_eq "${out}" "The queue is full: 1 issues are ready for the worker."
   [ -e "${WORK}/query-calls" ] && fail "it queried Steam with a full queue"
   [ -e "${WORK}/full-calls" ] && fail "it read the index's details with a full queue"
   # Without a key, or when Steam fails, it opens nothing.
-  STEAM_API_KEY='' discover 150 3 > /dev/null && fail "it passed without a key"
+  STEAM_API_KEY='' discover 3 > /dev/null && fail "it passed without a key"
   expect_eq "$(calls)" ""
   for down in FAKE_STEAM_DOWN FAKE_FULL_DOWN; do
-    (export "${down}=1"; discover 150 3 > /dev/null) && fail "it passed with ${down}"
+    (export "${down}=1"; discover 3 > /dev/null) && fail "it passed with ${down}"
     expect_eq "$(created)" ""
   done
   # When the ranking fails, what the index's items require is queued.
   for down in FAKE_QUERY_DOWN FAKE_QUERY_BAD; do
-    (export "${down}=1"; discover 150 3 > /dev/null) && fail "it passed with ${down}"
+    (export "${down}=1"; discover 3 > /dev/null) && fail "it passed with ${down}"
     expect_eq "$(created)" "Add More Tiles (1102)"
   done
 }

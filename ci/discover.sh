@@ -1,9 +1,8 @@
 #!/bin/bash
 # Queues what the index doesn't have and no open issue queues: first the items that the items in the index require on
-# the Workshop, such as tile packs, then the most subscribed maps of the Workshop, most subscribed first, of the
-# DISCOVER_TOP most subscribed items tagged Map and each tag in DISCOVER_TAGS (comma-separated, such as Build 42). It
-# opens DISCOVER_COUNT issues, or without it as many as it takes for DISCOVER_QUEUE issues labelled ready to be open.
-# Steam tells both for a Web API key in STEAM_API_KEY.
+# the Workshop, such as tile packs, then the Workshop's items tagged Map and each tag in DISCOVER_TAGS (comma-separated,
+# such as Build 42), most subscribed first. It opens DISCOVER_COUNT issues, or without it as many as it takes for
+# DISCOVER_QUEUE issues labelled ready to be open. Steam tells both for a Web API key in STEAM_API_KEY.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 # shellcheck source=ci/lib.sh
@@ -17,13 +16,12 @@ if [ -z "${STEAM_API_KEY:-}" ]; then
   echo "::error::STEAM_API_KEY is empty: add a Steam Web API key as the repository secret STEAM_API_KEY"
   exit 1
 fi
-for setting in DISCOVER_TOP DISCOVER_QUEUE DISCOVER_COUNT; do
+for setting in DISCOVER_QUEUE DISCOVER_COUNT; do
   if [ -n "${!setting:-}" ] && ! [[ "${!setting}" =~ ^[1-9][0-9]*$ ]]; then
     echo "::error::${setting} is '${!setting}', not a whole number above 0"
     exit 1
   fi
 done
-top="${DISCOVER_TOP:?}"
 queue="${DISCOVER_QUEUE:?}"
 tags=(Map)
 IFS=, read -r -a more_tags <<< "${DISCOVER_TAGS:-}"
@@ -109,7 +107,7 @@ offer "${needed[@]}"
 # The ranking a page of 100 at a time, as far as it takes: Steam's cursor reaches deeper than its page numbers.
 ranked=0
 cursor='*'
-while [ "${opened}" -lt "${wanted}" ] && [ "${ranked}" -lt "${top}" ]; do
+while [ "${opened}" -lt "${wanted}" ]; do
   if ! response="$(curl -fsS --max-time 30 -G --data-urlencode "key=${STEAM_API_KEY}" \
     --data-urlencode "query_type=${BY_SUBSCRIPTIONS}" --data-urlencode "appid=${WORKSHOP_APP}" \
     "${tag_args[@]}" --data-urlencode "numperpage=100" --data-urlencode "cursor=${cursor}" \
@@ -119,7 +117,6 @@ while [ "${opened}" -lt "${wanted}" ] && [ "${ranked}" -lt "${top}" ]; do
     exit 1
   fi
   mapfile -t page < <(jq -r '.response.publishedfiledetails[]?.publishedfileid' <<< "${response}")
-  page=("${page[@]:0:top - ranked}")
   for id in "${page[@]}"; do
     ranked=$((ranked + 1))
     rank[${id}]="${ranked}"
@@ -130,7 +127,7 @@ while [ "${opened}" -lt "${wanted}" ] && [ "${ranked}" -lt "${top}" ]; do
 done
 
 if [ "${opened}" -lt "${wanted}" ]; then
-  echo "Queued ${opened} of the ${wanted} items wanted: the index has or queues the rest of the ${ranked} most subscribed maps${tagged}."
+  echo "Queued ${opened} of the ${wanted} items wanted: the index has or queues the rest of the ${ranked} maps${tagged} on the Workshop."
 else
   echo "Queued ${opened} items."
 fi
