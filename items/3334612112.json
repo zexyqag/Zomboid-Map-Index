@@ -1,0 +1,1 @@
+{"format":2,"id":"3334612112","title":"SOH","timeUpdated":1726869308,"mods":[{"folder":"!Base","roots":[{"path":"","modInfo":["name=SOHBase","poster=poster.png","id=SOHBase"],"zoneLoader":null,"maps":[],"translations":[]}]},{"folder":"SOH","roots":[{"path":"","modInfo":["name=SOH","id=SOH","require=SOHBase","poster=poster.png"],"zoneLoader":null,"maps":[],"translations":[]}]}]}
