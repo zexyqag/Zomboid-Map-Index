@@ -221,7 +221,7 @@ Raven Creek 42|This needs a Workshop link (https://steamcommunity.com/sharedfile
 444|Steam has no public Workshop item with the ID 444.
 111|Workshop item 111 isn't for Project Zomboid.
 222|Steam has banned Workshop item 222.
-333|Workshop item 333 isn't tagged Map on the Workshop and no item in the index requires it, so the index doesn't take it.
+333|Workshop item 333 isn't tagged Map on the Workshop and no map in the index needs it, so the index doesn't take it.
 EOF
 
   # Queued in another open issue already; this issue's own title doesn't count.
@@ -253,8 +253,12 @@ issue | comment | 9 | --body | Queued: the index has Raven Creek B42 from its up
 issue | comment | 9 | --body | Queued: the index has Raven Creek B42 in an older format, so it is read again. This issue closes when the index has it."
   done
 
-  # An item not tagged Map that an item in the index requires.
+  # An item not tagged Map that an item in the index requires: taken only when that item has a map.
   FAKE_ITEMS="$(jq -c '.["3484263516"].children = [{publishedfileid: "444", sortorder: 0, file_type: 0}, {publishedfileid: "333", sortorder: 1, file_type: 0}]' <<< "${FAKE_ITEMS}")"
+  request "$(form 333)"
+  expect_eq "$(calls | tail -n 1)" "issue | close | 9 | --reason | not planned"
+  printf '{"id": "3484263516", "title": "Raven Creek B42", "timeUpdated": 1789883053, "mods": [{"roots": [{"maps": [{"cells": [[1, 1, 1]]}]}]}]}\n' \
+    > "${WORK}/request/items/3484263516.json"
   rm -f "${WORK}/full-calls"
   request "$(form 333)"
   expect_eq "$(calls | tail -n 2)" "issue | edit | 9 | --title | Add Not a Map (333) | --add-label | add,ready
@@ -797,19 +801,24 @@ test_discover() {
   local repo="${WORK}/discover" out
   mkdir -p "${repo}/items"
   cp -r "${REPO}/ci" "${repo}/"
-  printf '{"format": 2, "id": "1003", "title": "Third", "timeUpdated": 1}\n' > "${repo}/items/1003.json"
-  printf '{"format": 2, "id": "1101", "title": "Tiles", "timeUpdated": 1}\n' > "${repo}/items/1101.json"
+  printf '{"format": 2, "id": "1003", "title": "Third", "timeUpdated": 1, "mods": [{"roots": [{"maps": [{"cells": [[1, 1, 1]]}]}]}]}\n' \
+    > "${repo}/items/1003.json"
+  printf '{"format": 2, "id": "1101", "title": "Tiles", "timeUpdated": 1, "mods": [{"roots": [{"maps": []}]}]}\n' > "${repo}/items/1101.json"
+  printf '{"format": 2, "id": "1201", "title": "Translation", "timeUpdated": 1, "mods": [{"roots": [{"maps": [{"cells": []}]}]}]}\n' \
+    > "${repo}/items/1201.json"
   # Ranked: 1001 to 1250. 1002 is banned, 1003 indexed, 1004 queued (a pull request doesn't queue 1001); the Workshop
-  # doesn't have those after 1006. The indexed Third requires the tile packs 1102 (not tagged Map) and 1101 (indexed)
-  # and the queued 1004, and Tiles 1102 too.
+  # doesn't have those after 1006. The indexed map Third requires the tile packs 1102 (not tagged Map) and 1101
+  # (indexed) and the queued 1004, and Tiles 1102 too. The indexed Translation, which has no map, requires 1301.
   export FAKE_RANKED FAKE_ITEMS STEAM_API_KEY=fake-key
   FAKE_RANKED="$(seq -s ' ' 1001 1250)"
   FAKE_ITEMS="$(jq -n -c --argjson first "$(details 1001 First 1789883053)" --argjson banned "$(details 1002 Banned 1 108600 1)" \
     --argjson third "$(details 1003 Third 1)" --argjson fourth "$(details 1004 Fourth 1)" \
     --argjson fifth "$(details 1005 Fifth 1789883053)" --argjson sixth "$(details 1006 Sixth 1)" \
     --argjson tiles "$(details 1101 Tiles 1 108600 0 "Build 42")" --argjson more "$(details 1102 "More Tiles" 1 108600 0 "Build 42")" \
+    --argjson translation "$(details 1201 Translation 1)" --argjson clothes "$(details 1301 Clothes 1 108600 0 "Build 42")" \
     '{"1001": $first, "1002": $banned, "1003": ($third + {children: [{publishedfileid: "1102"}, {publishedfileid: "1101"}, {publishedfileid: "1004"}]}),
-      "1004": $fourth, "1005": $fifth, "1006": $sixth, "1101": ($tiles + {children: [{publishedfileid: "1102"}]}), "1102": $more}')"
+      "1004": $fourth, "1005": $fifth, "1006": $sixth, "1101": ($tiles + {children: [{publishedfileid: "1102"}]}), "1102": $more,
+      "1201": ($translation + {children: [{publishedfileid: "1301"}]}), "1301": $clothes}')"
   export FAKE_OPEN='[{"number": 4, "title": "Add Fourth (1004)", "labels": [{"name": "add"}, {"name": "ready"}]},
     {"number": 5, "title": "A question", "labels": [{"name": "unready"}]},
     {"number": 6, "title": "Add First (1001)", "pull_request": {}, "labels": [{"name": "ready"}]}]'
@@ -827,7 +836,7 @@ test_discover() {
   expect_eq "${out}" "Queued 2 items."
   expect_eq "$(calls | grep '^issue | create')" "issue | create | --title | Add More Tiles (1102) | --label | add,ready | --body | More Tiles is required on the Workshop by Third, Tiles, about 115 MB, updated on $(date -u -d @1 +%Y-%m-%d). https://steamcommunity.com/sharedfiles/filedetails/?id=1102
 issue | create | --title | Add First (1001) | --label | add,ready | --body | First is number 1 of the most subscribed maps on the Workshop, about 115 MB, updated on $(date -u -d @1789883053 +%Y-%m-%d). https://steamcommunity.com/sharedfiles/filedetails/?id=1001"
-  expect_eq "$(cat "${WORK}/full-calls")" 'key=fake-key includechildren=true includevotes=true publishedfileids[0]=1003 publishedfileids[1]=1101'
+  expect_eq "$(cat "${WORK}/full-calls")" 'key=fake-key includechildren=true includevotes=true publishedfileids[0]=1003 publishedfileids[1]=1101 publishedfileids[2]=1201'
   expect_eq "$(head -n 1 "${WORK}/gh-calls")" "${LIST}"
   expect_eq "$(cat "${WORK}/sleep-calls")" "8"
   expect_eq "$(cat "${WORK}/query-calls")" "key=fake-key query_type=9 appid=108600 requiredtags[0]=Map numperpage=100 cursor=* ids_only=true"
@@ -883,6 +892,13 @@ issue | create | --title | Add First (1001) | --label | add,ready | --body | Fir
     (export "${down}=1"; discover 3 > /dev/null) && fail "it passed with ${down}"
     expect_eq "$(created)" ""
   done
+  # A map needs what it requires, and what that requires, whatever order Steam lists them in; an item without a map
+  # needs nothing.
+  local needs="${WORK}/needs"
+  mkdir -p "${needs}/items"
+  printf '{"id": "9", "mods": [{"roots": [{"maps": [{"cells": [[1, 1, 1]]}]}]}]}\n' > "${needs}/items/9.json"
+  for id in 5 6 7 8; do printf '{"id": "%s", "mods": []}\n' "${id}" > "${needs}/items/${id}.json"; done
+  expect_eq "$(cd "${needs}" && . "${REPO}/ci/lib.sh" && printf '6\t4\n7\t6\n8\t3\n9\t7\n' | needed_by_maps)" "$(printf '6\t4\n7\t6\n9\t7')"
   # When the ranking fails, what the index's items require is queued.
   for down in FAKE_QUERY_DOWN FAKE_QUERY_BAD; do
     (export "${down}=1"; discover 3 > /dev/null) && fail "it passed with ${down}"

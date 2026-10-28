@@ -4,7 +4,7 @@ An index of Project Zomboid maps on the Steam Workshop: which cells each map cov
 
 ## Asking for a map
 
-Open an issue with the **Add a map** form and give the map's Workshop link or ID. A check confirms that the item is a Project Zomboid item tagged Map on the Workshop, or one that an item in the index requires there, such as a tile pack, and queues it, or closes the issue with the reason. The issue closes when the index has the item.
+Open an issue with the **Add a map** form and give the map's Workshop link or ID. A check confirms that the item is a Project Zomboid item tagged Map on the Workshop, or one that a map in the index needs there, such as a tile pack, and queues it, or closes the issue with the reason. The issue closes when the index has the item.
 
 ## Updates
 
@@ -14,7 +14,7 @@ Once a week a check installs the game's dedicated server from each of its Steam 
 
 ## Required items and every map
 
-Every hour a check also queues, a few at a time, what the index doesn't have yet: first the items that its items require on the Workshop, such as tile packs, so it knows which item provides each mod a map needs, then every other map on the Workshop, for any build of the game, most subscribed first.
+Every hour a check also queues, a few at a time, what the index doesn't have yet: first the items that its maps need on the Workshop, such as tile packs (what they require, and what that requires), so it knows which item provides each mod a map needs, then every other map on the Workshop, for any build of the game, most subscribed first.
 
 ## How it works
 

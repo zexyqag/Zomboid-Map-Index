@@ -7,6 +7,6 @@ body:
     id: item
     attributes:
       label: Workshop item
-      description: The map's Workshop link (https://steamcommunity.com/sharedfiles/filedetails/?id=...) or its ID. A check confirms it is a Project Zomboid item tagged Map, or one that an item in the index requires, such as a tile pack, and queues it.
+      description: The map's Workshop link (https://steamcommunity.com/sharedfiles/filedetails/?id=...) or its ID. A check confirms it is a Project Zomboid item tagged Map, or one that a map in the index needs, such as a tile pack, and queues it.
     validations:
       required: true

@@ -1,7 +1,7 @@
 #!/bin/bash
 # Checks an issue made with the "Add a map" form (the event in GITHUB_EVENT_PATH): queues the item for the
 # worker (labels add or update, and ready), or closes the issue with the reason. Other issues are left alone. The index
-# takes items tagged Map, and items that a map in it requires on the Workshop, such as tile packs; which those are,
+# takes items tagged Map, and items that a map in it needs on the Workshop, such as tile packs; which those are,
 # Steam says for the Web API key in STEAM_API_KEY.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -38,12 +38,12 @@ case "$(item_problem <<< "${details}")" in
 esac
 title="$(jq -r '.title' <<< "${details}")"
 if ! is_map <<< "${details}"; then
-  if ! required="$(indexed_ids | full_details | required_items)"; then
+  if ! required="$(indexed_ids | full_details | required_items | needed_by_maps)"; then
     echo "::error::Steam's Workshop details of the index's items could not be read"
     exit 1
   fi
   if ! awk -F '\t' -v id="${id}" '$2 == id { found = 1 } END { exit !found }' <<< "${required}"; then
-    reject "Workshop item ${id} isn't tagged Map on the Workshop and no item in the index requires it, so the index doesn't take it."
+    reject "Workshop item ${id} isn't tagged Map on the Workshop and no map in the index needs it, so the index doesn't take it."
     exit 0
   fi
 fi

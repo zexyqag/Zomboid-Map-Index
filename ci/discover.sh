@@ -1,6 +1,6 @@
 #!/bin/bash
-# Queues what the index doesn't have and no open issue queues: first the items that the items in the index require on
-# the Workshop, such as tile packs, then the Workshop's items tagged Map and each tag in DISCOVER_TAGS (comma-separated,
+# Queues what the index doesn't have and no open issue queues: first the items that the maps in the index need on the
+# Workshop, such as tile packs (what they require, and what that requires), then the Workshop's items tagged Map and each tag in DISCOVER_TAGS (comma-separated,
 # such as Build 42), most subscribed first. It opens DISCOVER_COUNT issues, or without it as many as it takes for
 # DISCOVER_QUEUE issues labelled ready to be open. Steam tells both for a Web API key in STEAM_API_KEY.
 set -euo pipefail
@@ -50,9 +50,9 @@ else
   fi
 fi
 
-# What the index's items require on the Workshop, as "<item>\t<required item>", and per required item the titles of
-# those that require it.
-if ! required="$(indexed_ids | full_details | required_items)"; then
+# What the index's maps need on the Workshop, as "<item>\t<required item>", and per required item the titles of those
+# that require it.
+if ! required="$(indexed_ids | full_details | required_items | needed_by_maps)"; then
   echo "::error::Steam's Workshop details of the index's items could not be read"
   exit 1
 fi

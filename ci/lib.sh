@@ -76,6 +76,29 @@ indexed_ids() {
   done
 }
 
+map_items() {
+  # Prints the Workshop IDs of the items in the index that have a map with cells.
+  local -a files
+  shopt -s nullglob
+  files=(items/*.json)
+  shopt -u nullglob
+  [ "${#files[@]}" -eq 0 ] || jq -r 'select(any(.mods[]?.roots[]?.maps[]?; (.cells | length) > 0)) | .id' "${files[@]}"
+}
+
+needed_by_maps() {
+  # stdin = required_items lines. Prints those of the items a map needs: the items in the index with a map, what those
+  # require, what that requires, and so on, as far as the index has the items.
+  awk -F '\t' 'NR == FNR { reached[$1] = 1; next }
+    { line[++n] = $0; from[n] = $1; to[n] = $2 }
+    END {
+      do {
+        more = 0
+        for (i = 1; i <= n; i++) if ((from[i] in reached) && !(to[i] in reached)) { reached[to[i]] = 1; more = 1 }
+      } while (more)
+      for (i = 1; i <= n; i++) if (from[i] in reached) print line[i]
+    }' <(map_items) -
+}
+
 cell_runs() {
   # stdin = map folders, one per line. Prints "<folder>\t<cells>" for each with cell headers (<x>_<y>.lotheader), the
   # cells as JSON runs [y, first x, last x], by y and x.
