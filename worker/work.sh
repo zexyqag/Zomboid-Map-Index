@@ -2,9 +2,10 @@
 # Works through the open issues of the repository REPO (owner/name) that the checks labelled ready. An item to add
 # or update is read from WORKSHOP_DIR (a Steam library's steamapps/workshop folder) when its copy there is as new as
 # the Workshop's, or else downloaded with SteamCMD into CACHE_DIR, and its index entry written to ITEMS_DIR/<id>.json;
-# the entry of an item that is gone is removed. With DROP_DOWNLOADS=1 the downloads are deleted once read. Prints
-# per issue "<number>\t<add|update|remove>\t<id>\t<title>\t<result>", "-" for what it doesn't know, the result
-# being "done" or why not, and what it does on stderr.
+# the entry of an item that is gone, or that the Workshop doesn't tag Map and that has no map, is removed. With
+# DROP_DOWNLOADS=1 the downloads are deleted once read. Prints per issue "<number>\t<add|update|remove>\t<id>\t<result>\t<title>",
+# "-" for what it doesn't know, the result being "done" or why not, the title last as it can be empty, and what it
+# does on stderr.
 set -euo pipefail
 here="$(dirname "$0")"
 # shellcheck source=ci/lib.sh
@@ -58,28 +59,28 @@ for ((page = 1; ; page++)); do
 done
 while IFS=$'\t' read -r number id kind title; do
   if [ "${id}" = - ] || [ "${kind}" = - ]; then
-    printf '%s\t-\t-\t%s\tits title has no Workshop ID or it has no add, update or gone label\n' "${number}" "${title}"
+    printf '%s\t-\t-\tits title has no Workshop ID or it has no add, update or gone label\t%s\n' "${number}" "${title}"
     continue
   fi
   if ! details="$(steam_details <<< "${id}")"; then
-    printf '%s\t%s\t%s\t%s\tSteam'"'"'s Workshop details could not be read\n' "${number}" "${kind}" "${id}" "${title}"
+    printf '%s\t%s\t%s\tSteam'"'"'s Workshop details could not be read\t%s\n' "${number}" "${kind}" "${id}" "${title}"
     continue
   fi
   problem="$(item_problem <<< "${details}")"
   if [ "${kind}" = gone ]; then
     title="${title#Gone }"
     title="${title% "(${id})"}"
-    case "${problem}" in
-      missing | app | banned)
-        rm -f "${items}/${id}.json"
-        printf '%s\tremove\t%s\t%s\tdone\n' "${number}" "${id}" "${title}" ;;
-      *) printf '%s\tremove\t%s\t%s\tthe Workshop has it again\n' "${number}" "${id}" "${title}" ;;
-    esac
+    if [ -n "${problem}" ] || { ! is_map <<< "${details}" && ! has_map "${items}/${id}.json"; }; then
+      rm -f "${items}/${id}.json"
+      printf '%s\tremove\t%s\tdone\t%s\n' "${number}" "${id}" "${title}"
+    else
+      printf '%s\tremove\t%s\tthe Workshop has it again\t%s\n' "${number}" "${id}" "${title}"
+    fi
     continue
   fi
   name="$(jq -r '.title' <<< "${details}")"
   if [ -n "${problem}" ]; then
-    printf '%s\t%s\t%s\t%s\tthe Workshop says: %s\n' "${number}" "${kind}" "${id}" "${name}" "${problem}"
+    printf '%s\t%s\t%s\tthe Workshop says: %s\t%s\n' "${number}" "${kind}" "${id}" "${problem}" "${name}"
     continue
   fi
   updated="$(jq -r '.time_updated' <<< "${details}")"
@@ -92,16 +93,16 @@ while IFS=$'\t' read -r number id kind title; do
     downloaded=true
     if ! folder="$(download "${id}")"; then
       drop_downloads
-      printf '%s\t%s\t%s\t%s\tSteamCMD could not download it\n' "${number}" "${kind}" "${id}" "${name}"
+      printf '%s\t%s\t%s\tSteamCMD could not download it\t%s\n' "${number}" "${kind}" "${id}" "${name}"
       continue
     fi
   fi
   if bash "${here}/index_item.sh" "${folder}" "${id}" "${name}" "${updated}" > "${items}/${id}.json.new"; then
     mv "${items}/${id}.json.new" "${items}/${id}.json"
-    printf '%s\t%s\t%s\t%s\tdone\n' "${number}" "${kind}" "${id}" "${name}"
+    printf '%s\t%s\t%s\tdone\t%s\n' "${number}" "${kind}" "${id}" "${name}"
   else
     rm -f "${items}/${id}.json.new"
-    printf '%s\t%s\t%s\t%s\tits files could not be read\n' "${number}" "${kind}" "${id}" "${name}"
+    printf '%s\t%s\t%s\tits files could not be read\t%s\n' "${number}" "${kind}" "${id}" "${name}"
   fi
   [ "${downloaded}" = false ] || drop_downloads
 done < <(jq -r -s 'add | .[] | select(.pull_request | not) | [.number, ((.title | capture("\\((?<id>[0-9]+)\\)$").id) // "-"),

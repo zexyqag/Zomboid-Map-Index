@@ -76,6 +76,11 @@ indexed_ids() {
   done
 }
 
+has_map() {
+  # $1 = an index entry. True when it has a map with cells.
+  [ -f "$1" ] && jq -e 'any(.mods[]?.roots[]?.maps[]?; (.cells | length) > 0)' "$1" > /dev/null
+}
+
 map_items() {
   # Prints the Workshop IDs of the items in the index that have a map with cells.
   local -a files
@@ -159,7 +164,7 @@ queued_in() {
 ensure_labels() {
   gh label create add --color 1d76db --description "A map to add to the index" --force > /dev/null
   gh label create update --color fbca04 --description "A map that changed since it was indexed" --force > /dev/null
-  gh label create gone --color b60205 --description "A map the Workshop no longer has" --force > /dev/null
+  gh label create gone --color b60205 --description "An item to drop from the index" --force > /dev/null
   gh label create ready --color 0e8a16 --description "Checked, waiting for the worker" --force > /dev/null
 }
 

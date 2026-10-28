@@ -159,7 +159,7 @@ lotheader() {
 
 LABELS='label | create | add | --color | 1d76db | --description | A map to add to the index | --force
 label | create | update | --color | fbca04 | --description | A map that changed since it was indexed | --force
-label | create | gone | --color | b60205 | --description | A map the Workshop no longer has | --force
+label | create | gone | --color | b60205 | --description | An item to drop from the index | --force
 label | create | ready | --color | 0e8a16 | --description | Checked, waiting for the worker | --force'
 
 details() {
@@ -289,27 +289,34 @@ test_freshness() {
   expect_eq "$(calls)" ""
 
   # Items with a map, and items without map folders: 8 and 9 changed on the Workshop since a version the index has
-  # from 89 and 90 days ago, 10 since one from a day ago.
-  local now day=86400 map='[{"folder": "M", "roots": [{"path": "", "maps": [{"name": "M"}]}]}]'
+  # from 89 and 90 days ago, 10 since one from a day ago. 11 and 12 aren't tagged Map and have no map, and the map 1
+  # requires 12. 13 has no title on the Workshop. 14 isn't tagged Map but has a map.
+  local now day=86400 map='[{"folder": "M", "roots": [{"path": "", "maps": [{"name": "M", "cells": [[1, 1, 1]]}]}]}]'
   now="$(date +%s)"
   for item in "1 Current 100 2 ${map}" "2 Changed 100 2 ${map}" "3 Removed 100 2 []" "4 Banned 100 2 []" "5 Queued 100 2 []" \
     "6 Elsewhere 100 2 []" "7 Older 100 1 ${map}" "8 Tiles $((now - 89 * day)) 2 []" "9 Tools $((now - 90 * day - 60)) 2 []" \
-    "10 Fresh $((now - day)) 2 ${map}"; do
+    "10 Fresh $((now - day)) 2 ${map}" "11 Translation 100 2 []" "12 Needed 100 2 []" "13 - 100 2 ${map}" "14 Untagged 100 2 ${map}"; do
     read -r id title updated format mods <<< "${item}"
+    [ "${title}" != - ] || title=
     printf '{"format": %s, "id": "%s", "title": "%s", "timeUpdated": %s, "mods": %s}\n' "${format}" "${id}" "${title}" "${updated}" "${mods}" \
       > "${repo}/items/${id}.json"
   done
-  export FAKE_ITEMS
+  export FAKE_ITEMS STEAM_API_KEY=fake-key
   FAKE_ITEMS="$(jq -n -c --argjson current "$(details 1 Current 100)" --argjson changed "$(details 2 "Changed Again" 200)" \
     --argjson banned "$(details 4 Banned 100 108600 1)" --argjson queued "$(details 5 Queued 300)" --argjson elsewhere "$(details 6 Elsewhere 100 999)" \
     --argjson older "$(details 7 "Older Format" 100)" --argjson tiles "$(details 8 Tiles "${now}")" --argjson tools "$(details 9 Tools "${now}")" \
-    --argjson fresh "$(details 10 Fresh "${now}")" \
-    '{"1": $current, "2": $changed, "4": $banned, "5": $queued, "6": $elsewhere, "7": $older, "8": $tiles, "9": $tools, "10": $fresh}')"
+    --argjson fresh "$(details 10 Fresh "${now}")" --argjson translation "$(details 11 Translation 100 108600 0 "Build 42")" \
+    --argjson needed "$(details 12 Needed 100 108600 0 "Build 42")" --argjson untitled "$(details 13 "" 300)" \
+    --argjson untagged "$(details 14 Untagged 100 108600 0 "Build 42")" \
+    '{"1": ($current + {children: [{publishedfileid: "12"}]}), "2": $changed, "4": $banned, "5": $queued, "6": $elsewhere, "7": $older,
+      "8": $tiles, "9": $tools, "10": $fresh, "11": $translation, "12": $needed, "13": $untitled, "14": $untagged}')"
   rm -f "${WORK}/gh-calls" "${WORK}/sleep-calls"
   FAKE_OPEN='[{"number": 3, "title": "Update Queued (5)"}]' bash "${repo}/ci/freshness.sh" || fail "the check failed"
   expect_eq "$(calls)" "${LABELS}
 ${LIST}
 issue | create | --title | Update Fresh (10) | --label | update,ready | --body | Fresh changed on the Workshop on $(date -u -d "@${now}" +%Y-%m-%d); the index has it from $(date -u -d "@$((now - day))" +%Y-%m-%d). https://steamcommunity.com/sharedfiles/filedetails/?id=10
+issue | create | --title | Gone Translation (11) | --label | gone,ready | --body | Translation isn't tagged Map on the Workshop and no map in the index needs it, so the index drops it. https://steamcommunity.com/sharedfiles/filedetails/?id=11
+issue | create | --title | Update  (13) | --label | update,ready | --body |  changed on the Workshop on $(date -u -d @300 +%Y-%m-%d); the index has it from $(date -u -d @100 +%Y-%m-%d). https://steamcommunity.com/sharedfiles/filedetails/?id=13
 issue | create | --title | Update Changed Again (2) | --label | update,ready | --body | Changed Again changed on the Workshop on $(date -u -d @200 +%Y-%m-%d); the index has it from $(date -u -d @100 +%Y-%m-%d). https://steamcommunity.com/sharedfiles/filedetails/?id=2
 issue | create | --title | Gone Removed (3) | --label | gone,ready | --body | The Workshop no longer has Removed as a Project Zomboid item (removed). https://steamcommunity.com/sharedfiles/filedetails/?id=3
 issue | create | --title | Gone Banned (4) | --label | gone,ready | --body | The Workshop no longer has Banned as a Project Zomboid item (banned). https://steamcommunity.com/sharedfiles/filedetails/?id=4
@@ -317,11 +324,14 @@ issue | create | --title | Gone Elsewhere (6) | --label | gone,ready | --body | 
 issue | create | --title | Update Older Format (7) | --label | update,ready | --body | The index has Older Format in an older format, so the worker reads it again. https://steamcommunity.com/sharedfiles/filedetails/?id=7
 issue | create | --title | Update Tools (9) | --label | update,ready | --body | Tools changed on the Workshop on $(date -u -d "@${now}" +%Y-%m-%d); the index has it from $(date -u -d "@$((now - 90 * day - 60))" +%Y-%m-%d). https://steamcommunity.com/sharedfiles/filedetails/?id=9"
   # A second between new issues.
-  expect_eq "$(paste -sd ' ' "${WORK}/sleep-calls")" "1 1 1 1 1 1"
+  expect_eq "$(paste -sd ' ' "${WORK}/sleep-calls")" "1 1 1 1 1 1 1 1"
 
-  # Without Steam, or with an item left out of its answer, it fails before touching any issue.
+  # Without Steam, with an item left out of its answer, or without the keyed details, it fails before touching any
+  # issue.
   rm -f "${WORK}/gh-calls"
   FAKE_STEAM_DOWN=1 bash "${repo}/ci/freshness.sh" > /dev/null && fail "the check passed without Steam"
+  STEAM_API_KEY='' bash "${repo}/ci/freshness.sh" > /dev/null 2>&1 && fail "the check passed without a key"
+  FAKE_FULL_DOWN=1 bash "${repo}/ci/freshness.sh" > /dev/null && fail "the check passed without the keyed details"
   FAKE_STEAM_SKIP=4 bash "${repo}/ci/freshness.sh" > /dev/null && fail "the check passed with an item left out"
   expect_eq "$(calls)" ""
 }
@@ -385,10 +395,14 @@ test_work() {
   make_item "${dir}/content/789"
   make_item "${dir}/content/654"
   make_item "${dir}/content/333"
+  make_item "${dir}/content/655"
   make_item "${dir}/library/content/108600/456"
   make_item "${dir}/library/content/108600/789"
   make_item "${dir}/library/content/108600/654"
   printf '{"id": "999"}\n' > "${dir}/items/999.json"
+  # Neither is tagged Map on the Workshop any more: 777 has no map, 778 has one.
+  printf '{"id": "777", "mods": []}\n' > "${dir}/items/777.json"
+  printf '{"id": "778", "mods": [{"roots": [{"maps": [{"cells": [[1, 1, 1]]}]}]}]}\n' > "${dir}/items/778.json"
   printf '%s\n' '"AppWorkshop"' '{' '	"WorkshopItemsInstalled"' '	{' '		"456"' '		{' '			"size"		"1"' '			"timeupdated"		"300"' '		}' \
     '		"789"' '		{' '			"timeupdated"		"100"' '		}' '	}' '	"WorkshopItemDetails"' '	{' '		"789"' '		{' '			"timeupdated"		"900"' '		}' '		"654"' '		{' '			"timeupdated"		"900"' '		}' '	}' '}' \
     > "${dir}/library/appworkshop_108600.acf"
@@ -409,7 +423,10 @@ EOF
   FAKE_ITEMS="$(jq -n -c --argjson town "$(details 123 "Town Pack" 200)" --argjson local "$(details 456 "Local Map" 300)" \
     --argjson stale "$(details 789 "Stale Map" 200)" --argjson back "$(details 555 "Back" 1)" --argjson broken "$(details 321 "Broken" 5)" \
     --argjson partial "$(details 322 "Partial" 5)" --argjson untagged "$(details 333 "Untagged" 5 108600 0 "Build 42")" --argjson details "$(details 654 "Details Only" 500)" \
-    '{"123": $town, "456": $local, "789": $stale, "555": $back, "321": $broken, "322": $partial, "333": $untagged, "654": $details}')"
+    --argjson translation "$(details 777 Translation 5 108600 0 "Build 42")" --argjson patch "$(details 778 Patch 5 108600 0 "Build 42")" \
+    --argjson untitled "$(details 655 "" 5)" \
+    '{"123": $town, "456": $local, "789": $stale, "555": $back, "321": $broken, "322": $partial, "333": $untagged, "654": $details,
+      "777": $translation, "778": $patch, "655": $untitled}')"
   FAKE_ISSUES='[
     {"number": 1, "title": "Add Town Pack (123)", "labels": [{"name": "add"}, {"name": "ready"}]},
     {"number": 2, "title": "Update Local Map (456)", "labels": [{"name": "update"}, {"name": "ready"}]},
@@ -423,22 +440,29 @@ EOF
     {"number": 8, "title": "A fix (123)", "labels": [{"name": "ready"}], "pull_request": {}}]'
   # A full first page, so the worker asks for the second.
   FAKE_ISSUES="$(jq -c '. + [range(100 - length) | {number: (100 + .), title: "A fix (123)", labels: [{name: "ready"}], pull_request: {}}]' <<< "${FAKE_ISSUES}")"
-  export FAKE_ISSUES_2='[{"number": 11, "title": "Add Details Only (654)", "labels": [{"name": "add"}, {"name": "ready"}]}]'
+  export FAKE_ISSUES_2='[{"number": 11, "title": "Add Details Only (654)", "labels": [{"name": "add"}, {"name": "ready"}]},
+    {"number": 12, "title": "Gone Translation (777)", "labels": [{"name": "gone"}, {"name": "ready"}]},
+    {"number": 13, "title": "Gone Patch (778)", "labels": [{"name": "gone"}, {"name": "ready"}]},
+    {"number": 14, "title": "Add  (655)", "labels": [{"name": "add"}, {"name": "ready"}]}]'
   rm -f "${WORK}/github-calls"
   local out worker="${REPO}/worker/work.sh"
   out="$(REPO=owner/index ITEMS_DIR="${dir}/items" CACHE_DIR="${dir}/cache" WORKSHOP_DIR="${dir}/library" STEAMCMDDIR="${dir}/steamcmd" \
     bash "${worker}" 2> "${WORK}/work-err")" || fail "the worker failed: $(cat "${WORK}/work-err")"
-  expect_eq "${out}" "$(printf '%s\n' "1	add	123	Town Pack	done" "2	update	456	Local Map	done" "3	add	789	Stale Map	done" \
-    "4	remove	999	Removed	done" "5	remove	555	Back	the Workshop has it again" "6	-	-	Add a map	its title has no Workshop ID or it has no add, update or gone label" \
-    "7	add	321	Broken	SteamCMD could not download it" "9	add	322	Partial	SteamCMD could not download it" \
-    "10	update	333	Untagged	done" "11	add	654	Details Only	done")"
+  expect_eq "${out}" "$(printf '%s\n' "1	add	123	done	Town Pack" "2	update	456	done	Local Map" "3	add	789	done	Stale Map" \
+    "4	remove	999	done	Removed" "5	remove	555	the Workshop has it again	Back" "6	-	-	its title has no Workshop ID or it has no add, update or gone label	Add a map" \
+    "7	add	321	SteamCMD could not download it	Broken" "9	add	322	SteamCMD could not download it	Partial" \
+    "10	update	333	done	Untagged" "11	add	654	done	Details Only" "12	remove	777	done	Translation" \
+    "13	remove	778	the Workshop has it again	Patch" "14	add	655	done	")"
   expect_eq "$(jq -c . "${dir}/items/123.json")" "${ITEM_JSON}"
   expect_eq "$(jq -c '[.id, .title, .timeUpdated]' "${dir}/items/456.json" "${dir}/items/789.json" | paste -sd ' ')" '["456","Local Map",300] ["789","Stale Map",200]'
   [ -e "${dir}/items/999.json" ] && fail "the gone item is still in the index"
+  [ -e "${dir}/items/777.json" ] && fail "the item without a map, not tagged Map, is still in the index"
+  [ -e "${dir}/items/778.json" ] || fail "the map not tagged Map is gone from the index"
+  expect_eq "$(jq -r '.title' "${dir}/items/655.json")" ""
   [ -e "${dir}/items/321.json" ] && fail "the item that failed to download is in the index"
   # 456 came from the library; 789's copy there is older than the Workshop's and 654 isn't installed in it, so they
   # were downloaded; 321 and 322 three times.
-  expect_eq "$(sed -E 's/.* ([0-9]+) \+quit$/\1/' "${WORK}/steamcmd-calls" | paste -sd ' ')" "123 789 321 321 321 322 322 322 333 654"
+  expect_eq "$(sed -E 's/.* ([0-9]+) \+quit$/\1/' "${WORK}/steamcmd-calls" | paste -sd ' ')" "123 789 321 321 321 322 322 322 333 654 655"
   expect_eq "$(head -n 1 "${WORK}/steamcmd-calls")" "+force_install_dir ${dir}/cache +login anonymous +workshop_download_item 108600 123 +quit"
   grep -q '^Reading Local Map (456) from the Steam library$' "${WORK}/work-err" || fail "no word of the library copy: $(cat "${WORK}/work-err")"
   [ -d "${dir}/cache/steamapps/workshop/content/108600/123" ] || fail "the download isn't kept"
@@ -450,7 +474,7 @@ EOF
   [ -e "${dir}/cache/steamapps/workshop" ] && fail "a download is left: $(find "${dir}/cache" -mindepth 3 -maxdepth 5)"
   # After the first, which finds what the run before kept, each download starts from nothing, after one that failed
   # too; the tries of one download keep what came before.
-  expect_eq "$(paste -sd ' ' "${WORK}/steamcmd-found")" "123:123,322,333,654,789 789: 321: 321: 321: 322: 322:322 322:322 333: 654:"
+  expect_eq "$(paste -sd ' ' "${WORK}/steamcmd-found")" "123:123,322,333,654,655,789 789: 321: 321: 321: 322: 322:322 322:322 333: 654: 655:"
   expect_eq "$(sed -E 's/.*&page=//' "${WORK}/github-calls" | paste -sd ' ')" "1 2"
   expect_eq "$(head -n 1 "${WORK}/github-calls")" "https://api.github.com/repos/owner/index/issues?state=open&labels=ready&per_page=100&page=1"
 }
@@ -479,7 +503,7 @@ printf '%s\n' "$*" >> "${WORK}/docker-calls"
 [ -z "${FAKE_RACE:-}" ] || git -C "${FAKE_RACE}" push --quiet origin HEAD:main
 printf '{"id": "123"}\n' > "${FAKE_CLONE}/items/123.json"
 rm -f "${FAKE_CLONE}/items/999.json"
-printf '%s\n' "1	add	123	Town Pack	done" "4	remove	999	Removed	done" "2	update	456	Local Map	done" "7	add	321	Broken	SteamCMD could not download it"
+printf '%s\n' "1	add	123	done	Town Pack" "4	remove	999	done	Removed" "2	update	456	done	Local Map" "7	add	321	SteamCMD could not download it	Broken"
 EOF
   chmod +x "${WORK}/bin/docker"
   local out
@@ -519,6 +543,11 @@ EOF
   expect_eq "$(git -C "${clone}" status --porcelain)" ''
   # The other clone's push, then each commit's, the first once on top of it.
   expect_eq "$(paste -sd ' ' "${WORK}/pushes")" 'pushed pushed pushed'
+  # A title the Workshop leaves empty: the result still commits, in the title's place last.
+  printf '{"id": "655"}\n' > "${clone}/items/655.json"
+  out="$(printf '14\tadd\t655\tdone\t\n' | (cd "${clone}" && bash worker/commit.sh))"
+  expect_eq "${out}" "#14 : add"
+  expect_eq "$(git -C "${remote}" log -1 --format='%s|%b' main | grep -v '^$' | paste -sd ' ')" "data: add  (655)|Closes #14"
 }
 
 # The service of owner/index, stopped by the fake sleep (after its first poll, or STOPS polls) with a ready issue that
@@ -544,7 +573,7 @@ key="${GIT_SSH_COMMAND#ssh -i }"
 printf '%s|%s|%s\n' "${ITEMS_DIR}" "${GIT_SSH_COMMAND:-}" "$([ -z "${GIT_SSH_COMMAND:-}" ] || echo "$(stat -c %a "${key%% *}") $(head -n 1 "${key%% *}")")" \
   >> "${WORK}/work-calls"
 printf '{"id": "123"}\n' > "${ITEMS_DIR}/123.json"
-printf '%s\n' "1	add	123	Town Pack	done" "2	update	456	Same	done"
+printf '%s\n' "1	add	123	done	Town Pack" "2	update	456	done	Same"
 EOF
   chmod +x "${worker}/work.sh"
   export GIT_AUTHOR_NAME=Worker GIT_AUTHOR_EMAIL=worker@example.com GIT_COMMITTER_NAME=Worker GIT_COMMITTER_EMAIL=worker@example.com
@@ -627,7 +656,7 @@ EOF
   cat > "${worker}/work.sh" <<'EOF'
 #!/bin/bash
 printf '{"id": "555"}\n' > "${ITEMS_DIR}/555.json"
-printf '%s\n' "3	add	555	Early	done"
+printf '%s\n' "3	add	555	done	Early"
 for _ in $(seq 50); do
   git --git-dir="${FAKE_REMOTE}" log --format=%s main | grep -qx 'data: add Early (555)' && { echo pushed >> "${WORK}/work-calls"; exit 1; }
   command -p sleep 0.1

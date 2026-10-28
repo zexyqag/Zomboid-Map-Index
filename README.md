@@ -8,7 +8,7 @@ Open an issue with the **Add a map** form and give the map's Workshop link or ID
 
 ## Updates
 
-Once a day a check asks the Workshop which maps in the index changed or were removed since they were indexed, and queues each in an issue of its own. An item without map folders, such as a tile pack, is read again at most every 90 days; ask for it with the form to have it read sooner.
+Once a day a check asks the Workshop which maps in the index changed or were removed since they were indexed, and which items in it are neither tagged Map nor needed by a map in the index, and queues each in an issue of its own. An item without map folders, such as a tile pack, is read again at most every 90 days; ask for it with the form to have it read sooner.
 
 Once a week a check installs the game's dedicated server from each of its Steam branches for Build 41 and Build 42 and reads which version it is and which cells the game's own maps cover.
 

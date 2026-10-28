@@ -4,7 +4,7 @@
 # came of each issue.
 set -euo pipefail
 
-while IFS=$'\t' read -r number kind id title result; do
+while IFS=$'\t' read -r number kind id result title; do
   [ -n "${number}" ] || continue
   if [ "${result}" != "done" ]; then
     echo "#${number} ${title}: ${result}"

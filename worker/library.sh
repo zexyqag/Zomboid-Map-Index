@@ -25,8 +25,8 @@ mapfile -t candidates < <(
     [ -n "${item}" ] && [ -z "$(item_problem <<< "${item}")" ] && is_map <<< "${item}" || continue
     id="$(jq -r '.publishedfileid' <<< "${item}")"
     [ ! -f "items/${id}.json" ] && [ -z "$(queued_in "${id}" <<< "${queued}")" ] || continue
-    jq -r '[.title, .publishedfileid, ((.file_size | tonumber) / 1048576 | ceil)] | @tsv' <<< "${item}"
-  done <<< "${details}" | sort -f
+    jq -r '[.publishedfileid, ((.file_size | tonumber) / 1048576 | ceil), .title] | @tsv' <<< "${item}"
+  done <<< "${details}" | sort -t $'\t' -k 3 -f
 )
 if [ "${#candidates[@]}" = 0 ]; then
   echo "The index has or queues every map in ${WORKSHOP_DIR}."
@@ -35,7 +35,7 @@ fi
 
 echo "Maps in ${WORKSHOP_DIR} that the index doesn't have:"
 for n in "${!candidates[@]}"; do
-  IFS=$'\t' read -r title id size <<< "${candidates[n]}"
+  IFS=$'\t' read -r id size title <<< "${candidates[n]}"
   printf '%4d  %s (%s), %s MB\n' "$((n + 1))" "${title}" "${id}" "${size}"
 done
 read -r -p "Open an issue for which? Numbers or ranges (1 3 5-7), all, or nothing to stop: " answer || true
@@ -62,7 +62,7 @@ done
 
 opened=0
 while read -r n; do
-  IFS=$'\t' read -r title id size <<< "${candidates[n - 1]}"
+  IFS=$'\t' read -r id size title <<< "${candidates[n - 1]}"
   # GitHub stops accounts that open issues much faster than one a second.
   [ "${opened}" = 0 ] || sleep 1
   url="$(gh issue create --title "Add a map" --label add --body "$(printf '### Workshop item\n\n%s' "$(workshop_link "${id}")")")"
