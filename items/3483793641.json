@@ -1,0 +1,1 @@
+{"format":2,"id":"3483793641","title":"SCPSL Map","timeUpdated":1747840813,"mods":[{"folder":"SCPSL","roots":[{"path":"","modInfo":["name=SCPSL","id=scpsl","poster=poster.png"],"zoneLoader":null,"maps":[{"name":"scp sl","cells":[[0,0,0]],"spawns":[[131,154,0]],"rooms":[],"zones":{"objects.lua":null},"mapInfo":["title=SCPSL","lots=My_map"],"title":"SCPSL"}],"translations":[]}]}]}
