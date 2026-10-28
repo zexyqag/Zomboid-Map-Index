@@ -26,6 +26,8 @@ The repository's GitHub Pages publish the whole index as `index.json`, `{"items"
 
 `workshop.json` has the Workshop's figures of each item by Workshop ID, read every day: `subscribers` and `favorites` now and their `lifetimeSubscribers` and `lifetimeFavorites`, unique `visitors`, `votesUp`, `votesDown` and Steam's `score` from them, public `comments`, `fileSize` in bytes, `timeCreated` and `timeUpdated`, the `preview` image and the Workshop IDs it `requires`. A value Steam doesn't give is `null`; an item Steam no longer has is left out.
 
+`builds.json` lists the builds that have a file, newest first, as `{"builds": [{"build": 42, "gameVersion": "42.21.0"}, ...]}`.
+
 `build-41.json` and `build-42.json` say what of each item the current version of that build loads, as the game reads the mods' `mod.info` files:
 
 - `gameVersion`: the version.

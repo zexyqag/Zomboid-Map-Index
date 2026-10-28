@@ -963,7 +963,8 @@ test_site() {
   # Without entries, an empty index, and without vanilla/ no builds; the Workshop's figures as they are.
   bash "${repo}/ci/site.sh" "${WORK}/site-empty" "${WORK}/workshop.json" || fail "the build failed without entries"
   expect_eq "$(cat "${WORK}/site-empty/index.json")" '{"items":[]}'
-  expect_eq "$(ls "${WORK}/site-empty" | paste -sd ' ')" "grid-1.js index.json workshop.json"
+  expect_eq "$(ls "${WORK}/site-empty" | paste -sd ' ')" "builds.json grid-1.js index.json workshop.json"
+  expect_eq "$(cat "${WORK}/site-empty/builds.json")" '{"builds":[]}'
   expect_eq "$(cat "${WORK}/site-empty/workshop.json")" '{"3":{"subscribers":5}}'
   bash "${repo}/ci/site.sh" "${WORK}/site-none" 2> /dev/null && fail "the build passed without the Workshop's figures"
   bash "${repo}/ci/site.sh" "${WORK}/site-none" "${WORK}/missing.json" 2> /dev/null && fail "the build passed with figures that aren't there"
@@ -976,12 +977,13 @@ test_site() {
   cp "${REPO}/items/LICENSE" "${repo}/items/"
   bash "${repo}/ci/site.sh" "${WORK}/site" "${WORK}/workshop.json" || fail "the build failed"
   expect_eq "$(cat "${WORK}/site/index.json")" '{"items":[{"id":"3","title":"Three"},{"id":"20","title":"Twenty"}]}'
-  expect_eq "$(ls "${WORK}/site" | paste -sd ' ')" "build-41.json build-42.json grid-1.js index.json workshop.json"
+  expect_eq "$(ls "${WORK}/site" | paste -sd ' ')" "build-41.json build-42.json builds.json grid-1.js index.json workshop.json"
+  expect_eq "$(cat "${WORK}/site/builds.json")" '{"builds":[{"build":42,"gameVersion":"42.21.0"},{"build":41,"gameVersion":"41.78.21"}]}'
   cmp -s "${WORK}/site/grid-1.js" "${REPO}/site/grid.js" || fail "grid-1.js isn't site/grid.js"
   # The major version names the script.
   sed -i "s/^export const VERSION = '1\.0\.0';$/export const VERSION = '12.3.4';/" "${repo}/site/grid.js"
   bash "${repo}/ci/site.sh" "${WORK}/site-12" "${WORK}/workshop.json" || fail "the build failed for version 12"
-  expect_eq "$(ls "${WORK}/site-12" | paste -sd ' ')" "build-41.json build-42.json grid-12.js index.json workshop.json"
+  expect_eq "$(ls "${WORK}/site-12" | paste -sd ' ')" "build-41.json build-42.json builds.json grid-12.js index.json workshop.json"
   sed -i "s/^export const VERSION = .*/export const VERSION = '2';/" "${repo}/site/grid.js"
   bash "${repo}/ci/site.sh" "${WORK}/site-bad" "${WORK}/workshop.json" 2> /dev/null && fail "the build passed without a full version"
 }
@@ -1083,7 +1085,7 @@ JSON
   rm "${repo}/vanilla/41.json"
   vanilla 42 42.19.5 42.19
   bash "${repo}/ci/site.sh" "${WORK}/builds-4219" "${WORK}/workshop.json" 2> /dev/null || fail "the build failed for 42.19"
-  expect_eq "$(ls "${WORK}/builds-4219" | paste -sd ' ')" "build-42.json grid-1.js index.json workshop.json"
+  expect_eq "$(ls "${WORK}/builds-4219" | paste -sd ' ')" "build-42.json builds.json grid-1.js index.json workshop.json"
   expect_eq "$(jq -c '[.maps[].title]' "${WORK}/builds-4219/build-42.json")" '[null,"Town 42 TXT","Next TXT",null]'
   vanilla 42 42.20 unstable
   bash "${repo}/ci/site.sh" "${WORK}/builds-4220" "${WORK}/workshop.json" 2> /dev/null || fail "the build failed for 42.20"

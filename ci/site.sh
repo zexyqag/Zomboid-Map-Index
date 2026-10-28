@@ -1,8 +1,9 @@
 #!/bin/bash
 # Builds the site in the folder $1: index.json, every entry of items/ by Workshop ID as {"items": [...]}, the grid
 # script as grid-<major version>.js, workshop.json, the Workshop's figures of the items as workshop.sh printed them to
-# the file $2, and for each build of the game in vanilla/ build-<major version>.json: what of each item loads on the
-# version read there, with its figures, which of those maps share cells, and the game's own maps.
+# the file $2, for each build of the game in vanilla/ build-<major version>.json: what of each item loads on the
+# version read there, with its figures, which of those maps share cells, and the game's own maps, and builds.json:
+# those builds and their versions, newest first.
 set -euo pipefail
 out="$(realpath -m "${1:?usage: site.sh <folder> <workshop figures>}")"
 workshop="$(realpath "${2:?usage: site.sh <folder> <workshop figures>}")"
@@ -104,3 +105,7 @@ for i in "${!games[@]}"; do
        providers: ([$mods[] | select(.loads)] | group_by(.id) | map({key: .[0].id, value: (map(.item) | unique | sort_by(tonumber))})
          | from_entries)}' "${tmp}/entries" > "${out}/build-$(basename "${games[$i]}" .json).json"
 done
+for i in "${!games[@]}"; do
+  printf '%s\t%s\n' "$(basename "${games[$i]}" .json)" "${versions[$i]}"
+done | jq -R -s -c '[split("\n")[] | select(length > 0) | split("\t") | {build: (.[0] | tonumber), gameVersion: .[1]}]
+  | sort_by(-.build) | {builds: .}' > "${out}/builds.json"
