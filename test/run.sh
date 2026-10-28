@@ -323,8 +323,8 @@ issue | create | --title | Gone Banned (4) | --label | gone,ready | --body | The
 issue | create | --title | Gone Elsewhere (6) | --label | gone,ready | --body | The Workshop no longer has Elsewhere as a Project Zomboid item (not for Project Zomboid). https://steamcommunity.com/sharedfiles/filedetails/?id=6
 issue | create | --title | Update Older Format (7) | --label | update,ready | --body | The index has Older Format in an older format, so the worker reads it again. https://steamcommunity.com/sharedfiles/filedetails/?id=7
 issue | create | --title | Update Tools (9) | --label | update,ready | --body | Tools changed on the Workshop on $(date -u -d "@${now}" +%Y-%m-%d); the index has it from $(date -u -d "@$((now - 90 * day - 60))" +%Y-%m-%d). https://steamcommunity.com/sharedfiles/filedetails/?id=9"
-  # A second between new issues.
-  expect_eq "$(paste -sd ' ' "${WORK}/sleep-calls")" "1 1 1 1 1 1 1 1"
+  # 8 seconds between new issues.
+  expect_eq "$(paste -sd ' ' "${WORK}/sleep-calls")" "8 8 8 8 8 8 8 8"
 
   # Without Steam, with an item left out of its answer, or without the keyed details, it fails before touching any
   # issue.

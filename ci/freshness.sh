@@ -45,8 +45,8 @@ while IFS=$'\t' read -r id kind indexed detail title; do
   [ -n "${id}" ] || continue
   [ -z "$(queued_in "${id}" <<< "${open}")" ] || continue
   link="$(workshop_link "${id}")"
-  # GitHub stops accounts that open issues much faster than one a second.
-  [ "${opened}" = 0 ] || sleep 1
+  # GitHub stops accounts that open more than about 500 issues an hour.
+  [ "${opened}" = 0 ] || sleep 8
   case "${kind}" in
     update)
       gh issue create --title "Update ${title} (${id})" --label update,ready \
