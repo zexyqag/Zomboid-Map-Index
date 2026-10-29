@@ -31,12 +31,24 @@ drop_downloads() {
   [ "${DROP_DOWNLOADS:-0}" != 1 ] || rm -rf "${cache:?}/steamapps/workshop"
 }
 
+downloaded() {
+  # $1 = workshop ID. Prints the KiB SteamCMD has on disk while it downloads the item: all it keeps besides the items
+  # it has, and what it has of this one.
+  local workshop="${cache}/steamapps/workshop"
+  { find "${workshop}" -mindepth 1 -maxdepth 1 ! -name content -print0 2> /dev/null || true
+    printf '%s\0' "${workshop}/content/${WORKSHOP_APP}/$1"; } | du -sk -c --files0-from=- 2> /dev/null | tail -n 1 | cut -f 1 || true
+}
+
 download() {
-  # $1 = workshop ID. Downloads the item with SteamCMD, trying three times, and prints its folder, or what SteamCMD
-  # said last when it fails: its last error, or else its last line, on one line without colours or tabs.
-  local attempt log lines said
+  # $1 = workshop ID. Downloads the item with SteamCMD and prints its folder, or what SteamCMD said last when it
+  # fails: its last error, or else its last line, on one line without colours or tabs. SteamCMD gives up on a big
+  # item after a while but keeps what it got, so it is tried again for as long as a try gets more of it, until three
+  # tries in a row get nothing.
+  local attempt=0 fruitless=0 most size log lines said
+  most="$(downloaded "$1")"
   log="$(mktemp)"
-  for attempt in 1 2 3; do
+  while [ "${fruitless}" -lt 3 ]; do
+    attempt=$((attempt + 1))
     "${STEAMCMDDIR:?}/steamcmd.sh" +force_install_dir "${cache}" +login anonymous +workshop_download_item "${WORKSHOP_APP}" "$1" +quit \
       > "${log}" 2>&1 || true
     if grep -q "Success. Downloaded item $1" "${log}" && [ -d "${cache}/steamapps/workshop/content/${WORKSHOP_APP}/$1" ]; then
@@ -44,11 +56,18 @@ download() {
       printf '%s\n' "${cache}/steamapps/workshop/content/${WORKSHOP_APP}/$1"
       return 0
     fi
-    # SteamCMD redraws its progress with carriage returns.
-    lines="$(tr '\r\t' '\n ' < "${log}" | sed -E 's/\x1b\[[0-9;]*[A-Za-z]//g; s/^ +| +$//g; /^$/d')"
+    # SteamCMD redraws its progress with carriage returns, and starts some lines with a colour on the same line.
+    lines="$(tr '\r\t' '\n ' < "${log}" | sed -E 's/\x1b\[[0-9;]*[A-Za-z]/\n/g' | sed -E 's/^ +| +$//g; /^$/d')"
     said="$(grep -E 'ERROR|Error|Timeout' <<< "${lines}" | tail -n 1 || true)"
     [ -n "${said}" ] || said="$(tail -n 1 <<< "${lines}")"
     echo "SteamCMD could not download item $1 (attempt ${attempt}): ${said}" >&2
+    size="$(downloaded "$1")"
+    if [ "${size}" -gt "${most}" ]; then
+      most="${size}"
+      fruitless=0
+    else
+      fruitless=$((fruitless + 1))
+    fi
   done
   rm -f "${log}"
   printf '%s\n' "${said}"

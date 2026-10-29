@@ -406,13 +406,27 @@ test_work() {
   printf '%s\n' '"AppWorkshop"' '{' '	"WorkshopItemsInstalled"' '	{' '		"456"' '		{' '			"size"		"1"' '			"timeupdated"		"300"' '		}' \
     '		"789"' '		{' '			"timeupdated"		"100"' '		}' '	}' '	"WorkshopItemDetails"' '	{' '		"789"' '		{' '			"timeupdated"		"900"' '		}' '		"654"' '		{' '			"timeupdated"		"900"' '		}' '	}' '}' \
     > "${dir}/library/appworkshop_108600.acf"
-  # SteamCMD downloads what FAKE_CONTENT has, except 321, and 322 only partly.
+  # SteamCMD downloads what FAKE_CONTENT has, except 321, and 322 only partly; 654 times out five times, getting more
+  # of it on the third and fifth. An earlier round left part of 999.
+  mkdir -p "${dir}/cache/steamapps/workshop/downloads/108600/999"
+  head -c 8192 /dev/zero > "${dir}/cache/steamapps/workshop/downloads/108600/999/chunk"
   cat > "${dir}/steamcmd/steamcmd.sh" <<'EOF'
 #!/bin/bash
 printf '%s\n' "$*" >> "${WORK}/steamcmd-calls"
 id="${@: -2:1}"
 echo "${id}:$(ls "$2/steamapps/workshop/content/108600" 2> /dev/null | paste -sd ,)" >> "${WORK}/steamcmd-found"
-if [ "${id}" = 321 ]; then printf 'Loading Steam API...\e[0mOK\r\nDownloading item 321 ...\rERROR! Timeout downloading item 321\e[0m\nUnloading\n'; exit 0; fi
+if [ "${id}" = 321 ]; then printf 'Loading Steam API...\e[0mOK\r\nDownloading item 321 ...\rERROR! Timeout downloading item 321\e[0mUnloading Steam API...\e[0mOK\n'; exit 0; fi
+partial="$2/steamapps/workshop/downloads/108600/${id}"
+if [ "${id}" = 654 ]; then
+  echo x >> "${WORK}/tries-654"
+  tries="$(wc -l < "${WORK}/tries-654")"
+  if [ "${tries}" -lt 6 ]; then
+    [ "$((tries % 2))" = 0 ] || [ "${tries}" = 1 ] || { mkdir -p "${partial}" && head -c 8192 /dev/zero > "${partial}/chunk-${tries}"; }
+    echo "ERROR! Timeout downloading item 654"
+    exit 0
+  fi
+fi
+rm -rf "${partial}"
 if [ "${id}" = 322 ]; then mkdir -p "$2/steamapps/workshop/content/108600/322/mods"; printf 'Downloading item 322 ...\t \r\n\n'; exit 0; fi
 mkdir -p "$2/steamapps/workshop/content/108600"
 cp -r "${FAKE_CONTENT}/${id}" "$2/steamapps/workshop/content/108600/"
@@ -462,22 +476,22 @@ EOF
   expect_eq "$(jq -r '.title' "${dir}/items/655.json")" ""
   [ -e "${dir}/items/321.json" ] && fail "the item that failed to download is in the index"
   # 456 came from the library; 789's copy there is older than the Workshop's and 654 isn't installed in it, so they
-  # were downloaded; 321 and 322 three times.
-  expect_eq "$(sed -E 's/.* ([0-9]+) \+quit$/\1/' "${WORK}/steamcmd-calls" | paste -sd ' ')" "123 789 321 321 321 322 322 322 333 654 655"
+  # were downloaded; 321 three times, 322 four (its first try left part of it), 654 six.
+  expect_eq "$(sed -E 's/.* ([0-9]+) \+quit$/\1/' "${WORK}/steamcmd-calls" | paste -sd ' ')" "123 789 321 321 321 322 322 322 322 333 654 654 654 654 654 654 655"
   expect_eq "$(head -n 1 "${WORK}/steamcmd-calls")" "+force_install_dir ${dir}/cache +login anonymous +workshop_download_item 108600 123 +quit"
   grep -q '^Reading Local Map (456) from the Steam library$' "${WORK}/work-err" || fail "no word of the library copy: $(cat "${WORK}/work-err")"
   grep -qxF 'SteamCMD could not download item 321 (attempt 3): ERROR! Timeout downloading item 321' "${WORK}/work-err" \
     || fail "no word of SteamCMD's error: $(cat "${WORK}/work-err")"
   [ -d "${dir}/cache/steamapps/workshop/content/108600/123" ] || fail "the download isn't kept"
   # Dropping downloads: each is gone once read, failed ones too, and the items are indexed as before.
-  rm -f "${WORK}/steamcmd-calls" "${WORK}/steamcmd-found" "${WORK}/github-calls" "${dir}/items/123.json"
+  rm -f "${WORK}/steamcmd-calls" "${WORK}/steamcmd-found" "${WORK}/github-calls" "${WORK}/tries-654" "${dir}/items/123.json"
   out="$(REPO=owner/index ITEMS_DIR="${dir}/items" CACHE_DIR="${dir}/cache" WORKSHOP_DIR="${dir}/library" STEAMCMDDIR="${dir}/steamcmd" \
     DROP_DOWNLOADS=1 bash "${worker}" 2> "${WORK}/work-err")" || fail "the worker failed dropping downloads: $(cat "${WORK}/work-err")"
   expect_eq "$(jq -c . "${dir}/items/123.json")" "${ITEM_JSON}"
   [ -e "${dir}/cache/steamapps/workshop" ] && fail "a download is left: $(find "${dir}/cache" -mindepth 3 -maxdepth 5)"
   # After the first, which finds what the run before kept, each download starts from nothing, after one that failed
   # too; the tries of one download keep what came before.
-  expect_eq "$(paste -sd ' ' "${WORK}/steamcmd-found")" "123:123,322,333,654,655,789 789: 321: 321: 321: 322: 322:322 322:322 333: 654: 655:"
+  expect_eq "$(paste -sd ' ' "${WORK}/steamcmd-found")" "123:123,322,333,654,655,789 789: 321: 321: 321: 322: 322:322 322:322 322:322 333: 654: 654: 654: 654: 654: 654: 655:"
   expect_eq "$(sed -E 's/.*&page=//' "${WORK}/github-calls" | paste -sd ' ')" "1 2"
   expect_eq "$(head -n 1 "${WORK}/github-calls")" "https://api.github.com/repos/owner/index/issues?state=open&labels=ready&per_page=100&page=1"
 }
