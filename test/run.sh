@@ -412,8 +412,8 @@ test_work() {
 printf '%s\n' "$*" >> "${WORK}/steamcmd-calls"
 id="${@: -2:1}"
 echo "${id}:$(ls "$2/steamapps/workshop/content/108600" 2> /dev/null | paste -sd ,)" >> "${WORK}/steamcmd-found"
-if [ "${id}" = 321 ]; then echo "ERROR! Timeout downloading item 321"; exit 0; fi
-if [ "${id}" = 322 ]; then mkdir -p "$2/steamapps/workshop/content/108600/322/mods"; echo "ERROR! Download item 322 failed (Failure)."; exit 0; fi
+if [ "${id}" = 321 ]; then printf 'Loading Steam API...\e[0mOK\r\nDownloading item 321 ...\rERROR! Timeout downloading item 321\e[0m\nUnloading\n'; exit 0; fi
+if [ "${id}" = 322 ]; then mkdir -p "$2/steamapps/workshop/content/108600/322/mods"; printf 'Downloading item 322 ...\t \r\n\n'; exit 0; fi
 mkdir -p "$2/steamapps/workshop/content/108600"
 cp -r "${FAKE_CONTENT}/${id}" "$2/steamapps/workshop/content/108600/"
 echo "Success. Downloaded item ${id} to \"$2/steamapps/workshop/content/108600/${id}\" (1 bytes)"
@@ -450,7 +450,8 @@ EOF
     bash "${worker}" 2> "${WORK}/work-err")" || fail "the worker failed: $(cat "${WORK}/work-err")"
   expect_eq "${out}" "$(printf '%s\n' "1	add	123	done	Town Pack" "2	update	456	done	Local Map" "3	add	789	done	Stale Map" \
     "4	remove	999	done	Removed" "5	remove	555	the Workshop has it again	Back" "6	-	-	its title has no Workshop ID or it has no add, update or gone label	Add a map" \
-    "7	add	321	SteamCMD could not download it	Broken" "9	add	322	SteamCMD could not download it	Partial" \
+    "7	add	321	SteamCMD could not download it: ERROR! Timeout downloading item 321	Broken" \
+    "9	add	322	SteamCMD could not download it: Downloading item 322 ...	Partial" \
     "10	update	333	done	Untagged" "11	add	654	done	Details Only" "12	remove	777	done	Translation" \
     "13	remove	778	the Workshop has it again	Patch" "14	add	655	done	")"
   expect_eq "$(jq -c . "${dir}/items/123.json")" "${ITEM_JSON}"
@@ -465,6 +466,8 @@ EOF
   expect_eq "$(sed -E 's/.* ([0-9]+) \+quit$/\1/' "${WORK}/steamcmd-calls" | paste -sd ' ')" "123 789 321 321 321 322 322 322 333 654 655"
   expect_eq "$(head -n 1 "${WORK}/steamcmd-calls")" "+force_install_dir ${dir}/cache +login anonymous +workshop_download_item 108600 123 +quit"
   grep -q '^Reading Local Map (456) from the Steam library$' "${WORK}/work-err" || fail "no word of the library copy: $(cat "${WORK}/work-err")"
+  grep -qxF 'SteamCMD could not download item 321 (attempt 3): ERROR! Timeout downloading item 321' "${WORK}/work-err" \
+    || fail "no word of SteamCMD's error: $(cat "${WORK}/work-err")"
   [ -d "${dir}/cache/steamapps/workshop/content/108600/123" ] || fail "the download isn't kept"
   # Dropping downloads: each is gone once read, failed ones too, and the items are indexed as before.
   rm -f "${WORK}/steamcmd-calls" "${WORK}/steamcmd-found" "${WORK}/github-calls" "${dir}/items/123.json"

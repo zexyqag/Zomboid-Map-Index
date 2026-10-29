@@ -32,8 +32,9 @@ drop_downloads() {
 }
 
 download() {
-  # $1 = workshop ID. Downloads the item with SteamCMD, trying three times, and prints its folder.
-  local attempt log
+  # $1 = workshop ID. Downloads the item with SteamCMD, trying three times, and prints its folder, or what SteamCMD
+  # said last when it fails: its last error, or else its last line, on one line without colours or tabs.
+  local attempt log lines said
   log="$(mktemp)"
   for attempt in 1 2 3; do
     "${STEAMCMDDIR:?}/steamcmd.sh" +force_install_dir "${cache}" +login anonymous +workshop_download_item "${WORKSHOP_APP}" "$1" +quit \
@@ -43,9 +44,14 @@ download() {
       printf '%s\n' "${cache}/steamapps/workshop/content/${WORKSHOP_APP}/$1"
       return 0
     fi
-    echo "SteamCMD could not download item $1 (attempt ${attempt}): $(grep -E 'ERROR|Error|Timeout' "${log}" | tail -n 1)" >&2
+    # SteamCMD redraws its progress with carriage returns.
+    lines="$(tr '\r\t' '\n ' < "${log}" | sed -E 's/\x1b\[[0-9;]*[A-Za-z]//g; s/^ +| +$//g; /^$/d')"
+    said="$(grep -E 'ERROR|Error|Timeout' <<< "${lines}" | tail -n 1 || true)"
+    [ -n "${said}" ] || said="$(tail -n 1 <<< "${lines}")"
+    echo "SteamCMD could not download item $1 (attempt ${attempt}): ${said}" >&2
   done
   rm -f "${log}"
+  printf '%s\n' "${said}"
   return 1
 }
 
@@ -93,7 +99,7 @@ while IFS=$'\t' read -r number id kind title; do
     downloaded=true
     if ! folder="$(download "${id}")"; then
       drop_downloads
-      printf '%s\t%s\t%s\tSteamCMD could not download it\t%s\n' "${number}" "${kind}" "${id}" "${name}"
+      printf '%s\t%s\t%s\tSteamCMD could not download it: %s\t%s\n' "${number}" "${kind}" "${id}" "${folder}" "${name}"
       continue
     fi
   fi
