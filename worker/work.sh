@@ -1,11 +1,11 @@
 #!/bin/bash
 # Works through the open issues of the repository REPO (owner/name) that the checks labelled ready. An item to add
 # or update is read from WORKSHOP_DIR (a Steam library's steamapps/workshop folder) when its copy there is as new as
-# the Workshop's, or else downloaded with SteamCMD into CACHE_DIR, and its index entry written to ITEMS_DIR/<id>.json;
-# the entry of an item that is gone, or that the Workshop doesn't tag Map and that has no map, is removed. With
-# DROP_DOWNLOADS=1 the downloads are deleted once read. Prints per issue "<number>\t<add|update|remove>\t<id>\t<result>\t<title>",
-# "-" for what it doesn't know, the result being "done" or why not, the title last as it can be empty, and what it
-# does on stderr.
+# the Workshop's, or else downloaded into CACHE_DIR with SteamCMD, or with DepotDownloader (DEPOTDOWNLOADER) when
+# SteamCMD can't, and its index entry written to ITEMS_DIR/<id>.json; the entry of an item that is gone, or that the
+# Workshop doesn't tag Map and that has no map, is removed. With DROP_DOWNLOADS=1 the downloads are deleted once
+# read. Prints per issue "<number>\t<add|update|remove>\t<id>\t<result>\t<title>", "-" for what it doesn't know, the
+# result being "done" or why not, the title last as it can be empty, and what it does on stderr.
 set -euo pipefail
 here="$(dirname "$0")"
 # shellcheck source=ci/lib.sh
@@ -27,8 +27,15 @@ local_copy() {
 }
 
 drop_downloads() {
-  # All of SteamCMD's workshop folder goes, its record of the items it has with it, so it downloads them anew.
-  [ "${DROP_DOWNLOADS:-0}" != 1 ] || rm -rf "${cache:?}/steamapps/workshop"
+  # All of SteamCMD's workshop folder goes, its record of the items it has with it, so it downloads them anew, and
+  # all DepotDownloader has.
+  [ "${DROP_DOWNLOADS:-0}" != 1 ] || rm -rf "${cache:?}/steamapps/workshop" "${cache:?}/depotdownloader"
+}
+
+log_lines() {
+  # $1 = a downloader's log. Prints its lines without colours, tabs or blank lines: SteamCMD redraws its progress
+  # with carriage returns, and starts some lines with a colour on the same line.
+  tr '\r\t' '\n ' < "$1" | sed -E 's/\x1b\[[0-9;]*[A-Za-z]/\n/g' | sed -E 's/^ +| +$//g; /^$/d'
 }
 
 downloaded() {
@@ -57,8 +64,7 @@ download() {
       printf '%s\n' "${cache}/steamapps/workshop/content/${WORKSHOP_APP}/$1"
       return 0
     fi
-    # SteamCMD redraws its progress with carriage returns, and starts some lines with a colour on the same line.
-    lines="$(tr '\r\t' '\n ' < "${log}" | sed -E 's/\x1b\[[0-9;]*[A-Za-z]/\n/g' | sed -E 's/^ +| +$//g; /^$/d')"
+    lines="$(log_lines "${log}")"
     said="$(grep -E 'ERROR|Error|Timeout' <<< "${lines}" | tail -n 1 || true)"
     [ -n "${said}" ] || said="$(tail -n 1 <<< "${lines}")"
     size="$(downloaded "$1")"
@@ -73,6 +79,22 @@ download() {
   done
   rm -f "${log}"
   printf '%s\n' "${said}"
+  return 1
+}
+
+depot_download() {
+  # $1 = workshop ID. Downloads the item with DepotDownloader into CACHE_DIR/depotdownloader/<id>, which goes on from
+  # what an earlier run left there, and prints its folder, or what DepotDownloader said last when it fails.
+  local folder="${cache}/depotdownloader/$1" log
+  log="$(mktemp)"
+  if "${DEPOTDOWNLOADER:?}" -app "${WORKSHOP_APP}" -pubfile "$1" -dir "${folder}" > "${log}" 2>&1 \
+    && grep -q '^Total downloaded:' "${log}"; then
+    rm -f "${log}"
+    printf '%s\n' "${folder}"
+    return 0
+  fi
+  log_lines "${log}" | grep -vx 'Disconnected from Steam' | tail -n 1 || true
+  rm -f "${log}"
   return 1
 }
 
@@ -120,8 +142,14 @@ while IFS=$'\t' read -r number id kind title; do
     downloaded=true
     if ! folder="$(download "${id}" "$(jq -r '(.file_size | tonumber) / 1048576 | ceil' <<< "${details}")")"; then
       drop_downloads
-      printf '%s\t%s\t%s\tSteamCMD could not download it: %s\t%s\n' "${number}" "${kind}" "${id}" "${folder}" "${name}"
-      continue
+      steamcmd_said="${folder}"
+      echo "Downloading ${name} (${id}) with DepotDownloader, as SteamCMD could not: ${steamcmd_said}" >&2
+      if ! folder="$(depot_download "${id}")"; then
+        drop_downloads
+        printf '%s\t%s\t%s\tSteamCMD could not download it (%s), nor DepotDownloader (%s)\t%s\n' \
+          "${number}" "${kind}" "${id}" "${steamcmd_said}" "${folder}" "${name}"
+        continue
+      fi
     fi
   fi
   if bash "${here}/index_item.sh" "${folder}" "${id}" "${name}" "${updated}" > "${items}/${id}.json.new"; then

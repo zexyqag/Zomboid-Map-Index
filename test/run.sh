@@ -390,8 +390,9 @@ test_index_item() {
 test_work() {
   TEST=work
   local dir="${WORK}/work"
-  mkdir -p "${dir}/items" "${dir}/cache" "${dir}/library/content/108600" "${dir}/steamcmd" "${dir}/content"
+  mkdir -p "${dir}/items" "${dir}/cache" "${dir}/library/content/108600" "${dir}/steamcmd" "${dir}/depotdownloader" "${dir}/content"
   make_item "${dir}/content/123"
+  make_item "${dir}/content/322"
   make_item "${dir}/content/789"
   make_item "${dir}/content/654"
   make_item "${dir}/content/333"
@@ -433,7 +434,20 @@ cp -r "${FAKE_CONTENT}/${id}" "$2/steamapps/workshop/content/108600/"
 echo "Success. Downloaded item ${id} to \"$2/steamapps/workshop/content/108600/${id}\" (1 bytes)"
 EOF
   chmod +x "${dir}/steamcmd/steamcmd.sh"
-  export FAKE_ITEMS FAKE_ISSUES FAKE_CONTENT="${dir}/content"
+  # DepotDownloader downloads what FAKE_CONTENT has, except 321, without failing.
+  cat > "${dir}/depotdownloader/DepotDownloader" <<'EOF'
+#!/bin/bash
+printf '%s\n' "$*" >> "${WORK}/depot-calls"
+id="$4" folder="$6"
+echo "${id}:$(ls -A "${folder}" 2> /dev/null | paste -sd ,)" >> "${WORK}/depot-found"
+echo "Connecting to Steam3... Done!"
+if [ "${id}" = 321 ]; then printf '%s\n' "Unable to locate manifest ID for published file 321" "Disconnected from Steam"; exit 0; fi
+mkdir -p "${folder}/.DepotDownloader"
+cp -r "${FAKE_CONTENT}/${id}/." "${folder}/"
+printf '%s\n' "100.00% ${folder}/mods/Old/mod.info" "Total downloaded: 1 bytes (1 bytes uncompressed) from 1 depots" "Disconnected from Steam"
+EOF
+  chmod +x "${dir}/depotdownloader/DepotDownloader"
+  export FAKE_ITEMS FAKE_ISSUES FAKE_CONTENT="${dir}/content" DEPOTDOWNLOADER="${dir}/depotdownloader/DepotDownloader"
   FAKE_ITEMS="$(jq -n -c --argjson town "$(details 123 "Town Pack" 200)" --argjson local "$(details 456 "Local Map" 300)" \
     --argjson stale "$(details 789 "Stale Map" 200)" --argjson back "$(details 555 "Back" 1)" --argjson broken "$(details 321 "Broken" 5)" \
     --argjson partial "$(details 322 "Partial" 5)" --argjson untagged "$(details 333 "Untagged" 5 108600 0 "Build 42")" --argjson details "$(details 654 "Details Only" 500)" \
@@ -464,8 +478,8 @@ EOF
     bash "${worker}" 2> "${WORK}/work-err")" || fail "the worker failed: $(cat "${WORK}/work-err")"
   expect_eq "${out}" "$(printf '%s\n' "1	add	123	done	Town Pack" "2	update	456	done	Local Map" "3	add	789	done	Stale Map" \
     "4	remove	999	done	Removed" "5	remove	555	the Workshop has it again	Back" "6	-	-	its title has no Workshop ID or it has no add, update or gone label	Add a map" \
-    "7	add	321	SteamCMD could not download it: ERROR! Timeout downloading item 321	Broken" \
-    "9	add	322	SteamCMD could not download it: Downloading item 322 ...	Partial" \
+    "7	add	321	SteamCMD could not download it (ERROR! Timeout downloading item 321), nor DepotDownloader (Unable to locate manifest ID for published file 321)	Broken" \
+    "9	add	322	done	Partial" \
     "10	update	333	done	Untagged" "11	add	654	done	Details Only" "12	remove	777	done	Translation" \
     "13	remove	778	the Workshop has it again	Patch" "14	add	655	done	")"
   expect_eq "$(jq -c . "${dir}/items/123.json")" "${ITEM_JSON}"
@@ -475,6 +489,12 @@ EOF
   [ -e "${dir}/items/778.json" ] || fail "the map not tagged Map is gone from the index"
   expect_eq "$(jq -r '.title' "${dir}/items/655.json")" ""
   [ -e "${dir}/items/321.json" ] && fail "the item that failed to download is in the index"
+  # SteamCMD got only part of 322, and DepotDownloader all of it.
+  expect_eq "$(jq -c '[.id, .title, .mods]' "${dir}/items/322.json")" "$(jq -c '["322", "Partial", .mods]' <<< "${ITEM_JSON}")"
+  expect_eq "$(cat "${WORK}/depot-calls")" "$(printf -- '-app 108600 -pubfile %s -dir %s\n' 321 "${dir}/cache/depotdownloader/321" 322 "${dir}/cache/depotdownloader/322")"
+  grep -qxF 'Downloading Partial (322) with DepotDownloader, as SteamCMD could not: Downloading item 322 ...' "${WORK}/work-err" \
+    || fail "no word of DepotDownloader: $(cat "${WORK}/work-err")"
+  [ -d "${dir}/cache/depotdownloader/322/mods" ] || fail "DepotDownloader's download isn't kept"
   # 456 came from the library; 789's copy there is older than the Workshop's and 654 isn't installed in it, so they
   # were downloaded; 321 three times, 322 four (its first try left part of it), 654 six.
   expect_eq "$(sed -E 's/.* ([0-9]+) \+quit$/\1/' "${WORK}/steamcmd-calls" | paste -sd ' ')" "123 789 321 321 321 322 322 322 322 333 654 654 654 654 654 654 655"
@@ -486,11 +506,16 @@ EOF
     || fail "no word of what SteamCMD has: $(cat "${WORK}/work-err")"
   [ -d "${dir}/cache/steamapps/workshop/content/108600/123" ] || fail "the download isn't kept"
   # Dropping downloads: each is gone once read, failed ones too, and the items are indexed as before.
-  rm -f "${WORK}/steamcmd-calls" "${WORK}/steamcmd-found" "${WORK}/github-calls" "${WORK}/tries-654" "${dir}/items/123.json"
+  rm -f "${WORK}/steamcmd-calls" "${WORK}/steamcmd-found" "${WORK}/depot-calls" "${WORK}/depot-found" "${WORK}/github-calls" "${WORK}/tries-654" \
+    "${dir}/items/123.json" "${dir}/items/322.json"
   out="$(REPO=owner/index ITEMS_DIR="${dir}/items" CACHE_DIR="${dir}/cache" WORKSHOP_DIR="${dir}/library" STEAMCMDDIR="${dir}/steamcmd" \
     DROP_DOWNLOADS=1 bash "${worker}" 2> "${WORK}/work-err")" || fail "the worker failed dropping downloads: $(cat "${WORK}/work-err")"
   expect_eq "$(jq -c . "${dir}/items/123.json")" "${ITEM_JSON}"
   [ -e "${dir}/cache/steamapps/workshop" ] && fail "a download is left: $(find "${dir}/cache" -mindepth 3 -maxdepth 5)"
+  [ -e "${dir}/cache/depotdownloader" ] && fail "a download of DepotDownloader is left: $(find "${dir}/cache/depotdownloader" -maxdepth 2)"
+  [ -e "${dir}/items/322.json" ] || fail "DepotDownloader's download wasn't read dropping downloads"
+  # DepotDownloader too starts from nothing, as SteamCMD's failure dropped what there was.
+  expect_eq "$(paste -sd ' ' "${WORK}/depot-found")" "321: 322:"
   # After the first, which finds what the run before kept, each download starts from nothing, after one that failed
   # too; the tries of one download keep what came before.
   expect_eq "$(paste -sd ' ' "${WORK}/steamcmd-found")" "123:123,322,333,654,655,789 789: 321: 321: 321: 322: 322:322 322:322 322:322 333: 654: 654: 654: 654: 654: 654: 655:"

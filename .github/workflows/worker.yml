@@ -31,6 +31,12 @@ jobs:
       - name: Check the service's tools
         run: docker run --rm --entrypoint sh zomboid-map-index-worker -c 'git --version && ssh -V && test -x /worker/worker/serve.sh'
 
+      # Mod Options (Build 41): small, and unchanged for years.
+      - name: Download a Workshop item with the image's DepotDownloader
+        run: >-
+          docker run --rm --entrypoint bash zomboid-map-index-worker -c
+          '. /worker/ci/lib.sh && "${DEPOTDOWNLOADER}" -app "${WORKSHOP_APP}" -pubfile 2169435993 -dir /tmp/item && test -d /tmp/item/mods'
+
       # For servers that run the worker as a service (worker/serve.sh).
       - name: Log in to GitHub Container Registry
         if: env.PUBLISH == 'true'

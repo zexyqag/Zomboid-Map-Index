@@ -5,6 +5,17 @@ RUN javac -Xlint:all,-serial -Werror -d /src/rooms /src/ReadSpawnRooms.java \
   && javac -Xlint:all,-serial -Werror -d /src/version /src/ReadGameVersion.java \
   && jar --create --file /src/read_game_version.jar --main-class ReadGameVersion -C /src/version .
 
+# For the items SteamCMD can't download: it stops each try after a few minutes, and some big items never finish.
+FROM debian:trixie-slim AS depotdownloader
+ARG DEPOTDOWNLOADER_VERSION=3.4.0
+ARG DEPOTDOWNLOADER_SHA256=a999dec66b4850fc961bd50366696d23c2d0fad7b18790e6a5647b2f19097a53
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends --no-install-suggests ca-certificates curl unzip \
+  && curl -fsSL -o /tmp/depotdownloader.zip \
+    "https://github.com/SteamRE/DepotDownloader/releases/download/DepotDownloader_${DEPOTDOWNLOADER_VERSION}/DepotDownloader-linux-x64.zip" \
+  && echo "${DEPOTDOWNLOADER_SHA256}  /tmp/depotdownloader.zip" | sha256sum -c - \
+  && unzip /tmp/depotdownloader.zip DepotDownloader -d /depotdownloader
+
 FROM cm2network/steamcmd:root
 
 RUN apt-get update \
@@ -26,6 +37,8 @@ RUN su "${USER}" -c "STEAM_PLATFORM=linux32 '${STEAMCMDDIR}/steamcmd.sh' +quit" 
 COPY --from=eclipse-temurin:25-jre /opt/java/openjdk /opt/java/openjdk
 ENV PATH="/opt/java/openjdk/bin:${PATH}" ROOMS_READER=/worker/read_spawn_rooms.jar VERSION_READER=/worker/read_game_version.jar
 COPY --from=readers /src/read_spawn_rooms.jar /src/read_game_version.jar /worker/
+COPY --from=depotdownloader --chmod=755 /depotdownloader/DepotDownloader /worker/
+ENV DEPOTDOWNLOADER=/worker/DepotDownloader
 COPY --chmod=755 ci/lib.sh /worker/ci/
 COPY --chmod=755 worker/commit.sh worker/index_item.sh worker/serve.sh worker/vanilla.sh worker/work.sh /worker/worker/
 USER ${USER}
