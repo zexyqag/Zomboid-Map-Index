@@ -5,7 +5,8 @@ RUN javac -Xlint:all,-serial -Werror -d /src/rooms /src/ReadSpawnRooms.java \
   && javac -Xlint:all,-serial -Werror -d /src/version /src/ReadGameVersion.java \
   && jar --create --file /src/read_game_version.jar --main-class ReadGameVersion -C /src/version .
 
-# For the items SteamCMD can't download: it stops each try after a few minutes, and some big items never finish.
+# Downloads the Workshop items, with SteamCMD as the fallback: it stops each try after a few minutes, and some big
+# items never finish.
 FROM debian:trixie-slim AS depotdownloader
 ARG DEPOTDOWNLOADER_VERSION=3.4.0
 ARG DEPOTDOWNLOADER_SHA256=a999dec66b4850fc961bd50366696d23c2d0fad7b18790e6a5647b2f19097a53

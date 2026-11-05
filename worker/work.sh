@@ -1,8 +1,8 @@
 #!/bin/bash
 # Works through the open issues of the repository REPO (owner/name) that the checks labelled ready. An item to add
 # or update is read from WORKSHOP_DIR (a Steam library's steamapps/workshop folder) when its copy there is as new as
-# the Workshop's, or else downloaded into CACHE_DIR with SteamCMD, or with DepotDownloader (DEPOTDOWNLOADER) when
-# SteamCMD can't, and its index entry written to ITEMS_DIR/<id>.json; the entry of an item that is gone, or that the
+# the Workshop's, or else downloaded into CACHE_DIR with DepotDownloader (DEPOTDOWNLOADER), or with SteamCMD when
+# DepotDownloader can't, and its index entry written to ITEMS_DIR/<id>.json; the entry of an item that is gone, or that the
 # Workshop doesn't tag Map and that has no map, is removed. With DROP_DOWNLOADS=1 the downloads are deleted once
 # read. Prints per issue "<number>\t<add|update|remove>\t<id>\t<result>\t<title>", "-" for what it doesn't know, the
 # result being "done" or why not, the title last as it can be empty, and what it does on stderr.
@@ -46,7 +46,7 @@ downloaded() {
     printf '%s\0' "${workshop}/content/${WORKSHOP_APP}/$1"; } | du -sk -c --files0-from=- 2> /dev/null | tail -n 1 | cut -f 1 || true
 }
 
-download() {
+steamcmd_download() {
   # $1 = workshop ID, $2 = its size in MiB. Downloads the item with SteamCMD and prints its folder, or what SteamCMD
   # said last when it fails: its last error, or else its last line, on one line without colours or tabs. SteamCMD
   # gives up on a big item after a while but keeps what it got, so it is tried again for as long as a try gets more
@@ -140,14 +140,14 @@ while IFS=$'\t' read -r number id kind title; do
   else
     echo "Downloading ${name} (${id})" >&2
     downloaded=true
-    if ! folder="$(download "${id}" "$(jq -r '(.file_size | tonumber) / 1048576 | ceil' <<< "${details}")")"; then
+    if ! folder="$(depot_download "${id}")"; then
       drop_downloads
-      steamcmd_said="${folder}"
-      echo "Downloading ${name} (${id}) with DepotDownloader, as SteamCMD could not: ${steamcmd_said}" >&2
-      if ! folder="$(depot_download "${id}")"; then
+      depot_said="${folder}"
+      echo "Downloading ${name} (${id}) with SteamCMD, as DepotDownloader could not: ${depot_said}" >&2
+      if ! folder="$(steamcmd_download "${id}" "$(jq -r '(.file_size | tonumber) / 1048576 | ceil' <<< "${details}")")"; then
         drop_downloads
-        printf '%s\t%s\t%s\tSteamCMD could not download it (%s), nor DepotDownloader (%s)\t%s\n' \
-          "${number}" "${kind}" "${id}" "${steamcmd_said}" "${folder}" "${name}"
+        printf '%s\t%s\t%s\tDepotDownloader could not download it (%s), nor SteamCMD (%s)\t%s\n' \
+          "${number}" "${kind}" "${id}" "${depot_said}" "${folder}" "${name}"
         continue
       fi
     fi
