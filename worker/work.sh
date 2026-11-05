@@ -40,11 +40,12 @@ downloaded() {
 }
 
 download() {
-  # $1 = workshop ID. Downloads the item with SteamCMD and prints its folder, or what SteamCMD said last when it
-  # fails: its last error, or else its last line, on one line without colours or tabs. SteamCMD gives up on a big
-  # item after a while but keeps what it got, so it is tried again for as long as a try gets more of it, until three
-  # tries in a row get nothing.
-  local attempt=0 fruitless=0 most size log lines said
+  # $1 = workshop ID, $2 = its size in MiB. Downloads the item with SteamCMD and prints its folder, or what SteamCMD
+  # said last when it fails: its last error, or else its last line, on one line without colours or tabs. SteamCMD
+  # gives up on a big item after a while but keeps what it got, so it is tried again for as long as a try gets more
+  # of it, until three tries in a row get nothing. Each failed try says how much SteamCMD has on disk and how much
+  # room is left.
+  local attempt=0 fruitless=0 most size free log lines said
   most="$(downloaded "$1")"
   log="$(mktemp)"
   while [ "${fruitless}" -lt 3 ]; do
@@ -60,8 +61,9 @@ download() {
     lines="$(tr '\r\t' '\n ' < "${log}" | sed -E 's/\x1b\[[0-9;]*[A-Za-z]/\n/g' | sed -E 's/^ +| +$//g; /^$/d')"
     said="$(grep -E 'ERROR|Error|Timeout' <<< "${lines}" | tail -n 1 || true)"
     [ -n "${said}" ] || said="$(tail -n 1 <<< "${lines}")"
-    echo "SteamCMD could not download item $1 (attempt ${attempt}): ${said}" >&2
     size="$(downloaded "$1")"
+    free="$(df -Pm "${cache}" | awk 'NR == 2 { print $4 }')"
+    echo "SteamCMD could not download item $1 (attempt ${attempt}, $((size / 1024)) of $2 MiB, ${free} MiB free): ${said}" >&2
     if [ "${size}" -gt "${most}" ]; then
       most="${size}"
       fruitless=0
@@ -116,7 +118,7 @@ while IFS=$'\t' read -r number id kind title; do
   else
     echo "Downloading ${name} (${id})" >&2
     downloaded=true
-    if ! folder="$(download "${id}")"; then
+    if ! folder="$(download "${id}" "$(jq -r '(.file_size | tonumber) / 1048576 | ceil' <<< "${details}")")"; then
       drop_downloads
       printf '%s\t%s\t%s\tSteamCMD could not download it: %s\t%s\n' "${number}" "${kind}" "${id}" "${folder}" "${name}"
       continue

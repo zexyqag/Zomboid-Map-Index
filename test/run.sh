@@ -421,7 +421,7 @@ if [ "${id}" = 654 ]; then
   echo x >> "${WORK}/tries-654"
   tries="$(wc -l < "${WORK}/tries-654")"
   if [ "${tries}" -lt 6 ]; then
-    [ "$((tries % 2))" = 0 ] || [ "${tries}" = 1 ] || { mkdir -p "${partial}" && head -c 8192 /dev/zero > "${partial}/chunk-${tries}"; }
+    [ "$((tries % 2))" = 0 ] || [ "${tries}" = 1 ] || { mkdir -p "${partial}" && head -c 1048576 /dev/zero > "${partial}/chunk-${tries}"; }
     echo "ERROR! Timeout downloading item 654"
     exit 0
   fi
@@ -480,8 +480,10 @@ EOF
   expect_eq "$(sed -E 's/.* ([0-9]+) \+quit$/\1/' "${WORK}/steamcmd-calls" | paste -sd ' ')" "123 789 321 321 321 322 322 322 322 333 654 654 654 654 654 654 655"
   expect_eq "$(head -n 1 "${WORK}/steamcmd-calls")" "+force_install_dir ${dir}/cache +login anonymous +workshop_download_item 108600 123 +quit"
   grep -q '^Reading Local Map (456) from the Steam library$' "${WORK}/work-err" || fail "no word of the library copy: $(cat "${WORK}/work-err")"
-  grep -qxF 'SteamCMD could not download item 321 (attempt 3): ERROR! Timeout downloading item 321' "${WORK}/work-err" \
+  grep -qxE 'SteamCMD could not download item 321 \(attempt 3, 0 of 115 MiB, [0-9]+ MiB free\): ERROR! Timeout downloading item 321' "${WORK}/work-err" \
     || fail "no word of SteamCMD's error: $(cat "${WORK}/work-err")"
+  grep -qxE 'SteamCMD could not download item 654 \(attempt 5, 2 of 115 MiB, [0-9]+ MiB free\): ERROR! Timeout downloading item 654' "${WORK}/work-err" \
+    || fail "no word of what SteamCMD has: $(cat "${WORK}/work-err")"
   [ -d "${dir}/cache/steamapps/workshop/content/108600/123" ] || fail "the download isn't kept"
   # Dropping downloads: each is gone once read, failed ones too, and the items are indexed as before.
   rm -f "${WORK}/steamcmd-calls" "${WORK}/steamcmd-found" "${WORK}/github-calls" "${WORK}/tries-654" "${dir}/items/123.json"
